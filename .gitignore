@@ -1,0 +1,17 @@
+# Secrets: OAuth client + token, env files
+backend/secrets/
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+CLAUDE.md

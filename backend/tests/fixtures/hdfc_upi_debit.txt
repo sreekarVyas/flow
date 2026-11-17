@@ -1,0 +1,8 @@
+Dear Customer,
+Greetings from HDFC Bank!
+Rs.1500.00 is debited from your account ending 1111 towards VPA ******0000@ybl (Test Payee Name) on 31-10-26.
+UPI transaction reference no.: 100000000001.
+If you did not authorize this transaction, please report it immediately at:
+a. When in India (Toll free): 1800 258 6161
+Warm regards,
+HDFC Bank
