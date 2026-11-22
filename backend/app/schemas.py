@@ -41,7 +41,7 @@ class TransactionPatch(BaseModel):
 
     kind: Kind | None = None
     category_id: int | None = None
-    notes: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=280)  # a short comment
     apply_to_similar: bool = False
 
 

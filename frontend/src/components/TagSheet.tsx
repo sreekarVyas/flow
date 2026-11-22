@@ -42,7 +42,7 @@ export function TagSheet({
 }: {
   txn: Transaction;
   onClose: () => void;
-  onSaved: (id: number, updatedSimilar: number) => void;
+  onSaved: (id: number, updatedSimilar: number, noteOnly: boolean) => void;
 }) {
   const qc = useQueryClient();
   const { tree, byId } = useCategories();
@@ -50,24 +50,33 @@ export function TagSheet({
   const [categoryId, setCategoryId] = useState<number | null>(txn.category_id);
   const [search, setSearch] = useState("");
   const [applySimilar, setApplySimilar] = useState(true);
+  const [note, setNote] = useState(txn.notes ?? "");
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const similar = useQuery({ queryKey: ["similar", txn.id], queryFn: () => api.similar(txn.id) });
 
+  const finalCategory = hasCategory(kind) ? categoryId : null;
+  const tagChanged = kind !== txn.kind || finalCategory !== txn.category_id;
+  const noteChanged = note.trim() !== (txn.notes ?? "");
+  const noteOnly = noteChanged && !tagChanged;
+
   const save = useMutation({
     mutationFn: () =>
-      api.patchTransaction(txn.id, {
-        kind,
-        category_id: hasCategory(kind) ? categoryId : null,
-        apply_to_similar: applySimilar && (similar.data?.count ?? 0) > 0,
-      }),
+      noteOnly
+        ? api.patchTransaction(txn.id, { notes: note.trim() || null })
+        : api.patchTransaction(txn.id, {
+            kind,
+            category_id: finalCategory,
+            ...(noteChanged ? { notes: note.trim() || null } : {}),
+            apply_to_similar: applySimilar && (similar.data?.count ?? 0) > 0,
+          }),
     onSuccess: (r) => {
-      if (hasCategory(kind) && categoryId != null) pushRecent(categoryId);
+      if (!noteOnly && finalCategory != null) pushRecent(finalCategory);
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["summary"] });
       qc.invalidateQueries({ queryKey: ["categorySummary"] });
       qc.invalidateQueries({ queryKey: ["rules"] });
-      onSaved(txn.id, r.updated_similar);
+      onSaved(txn.id, r.updated_similar, noteOnly);
       onClose();
     },
   });
@@ -181,6 +190,23 @@ export function TagSheet({
             )}
           </fieldset>
 
+          <div>
+            <label htmlFor="txn-note" className="mb-2 flex items-baseline justify-between text-sm font-medium text-ink-muted">
+              <span>Note</span>
+              {note.length > 200 && <span className="font-normal">{280 - note.length} left</span>}
+            </label>
+            <input
+              id="txn-note"
+              type="text"
+              value={note}
+              maxLength={280}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Add a short note, like “Dinner with friends”"
+              enterKeyHint="done"
+              className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-base placeholder:text-ink-muted focus:border-stamp focus:outline-none"
+            />
+          </div>
+
           {needsCategory && (
             <section aria-labelledby="cat-heading" className="space-y-4">
               <div className="flex items-baseline justify-between gap-2">
@@ -242,7 +268,7 @@ export function TagSheet({
         </div>
 
         <footer className="space-y-3 border-t border-line bg-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-          {sim && sim.count > 0 && (
+          {!noteOnly && sim && sim.count > 0 && (
             <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">
               <span>
                 Also tag {sim.count} other {sim.count === 1 ? "payment" : "payments"} {debit ? "to" : "from"}{" "}
@@ -261,7 +287,7 @@ export function TagSheet({
               />
             </label>
           )}
-          {sim?.learns_rule && kind && (
+          {!noteOnly && sim?.learns_rule && kind && (
             <p className="text-xs text-ink-muted">
               {needsCategory && selected
                 ? `Future payments to ${sim.payee} get ${selected.icon} ${selected.label}.`
@@ -279,7 +305,9 @@ export function TagSheet({
           >
             {save.isPending
               ? "Saving…"
-              : !kind
+              : noteOnly
+                ? "Save note"
+                : !kind
                 ? "Choose what this is"
                 : needsCategory && !selected
                   ? "Save without a category"

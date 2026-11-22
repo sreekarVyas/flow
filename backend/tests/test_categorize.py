@@ -193,6 +193,31 @@ def test_reparse_keeps_manual_kind_and_category(session, parsers):  # noqa: F811
     assert (burger.kind, burger.category_id, burger.category_source) == ("refund", snacks, "manual")
 
 
+def test_note_alone_does_not_confirm_and_survives_reparse(session, parsers):  # noqa: F811
+    from app.config import settings
+    from app.ingest.store import apply_classification
+    from app.main import app
+    from app.models import RawEmail
+
+    poll_once(session, FakeSource([email("a", BURGER)]))
+    burger, = by_name(session, "GOOD FLIPPIN BURGERS")
+    client = TestClient(app)
+    body = client.patch(f"/api/transactions/{burger.id}", json={"notes": "  Dinner with friends "}).json()
+    t = body["transaction"]
+    assert t["notes"] == "Dinner with friends"
+    assert (t["confirmed"], t["category_source"], body["rule"]) == (False, "rule", None)
+    assert client.patch(f"/api/transactions/{burger.id}", json={"notes": "x" * 281}).status_code == 422
+
+    session.expire_all()
+    for raw in session.scalars(select(RawEmail)).all():
+        apply_classification(session, raw, settings.tz)
+    session.commit()
+    assert by_name(session, "GOOD FLIPPIN BURGERS")[0].notes == "Dinner with friends"
+
+    body = client.patch(f"/api/transactions/{burger.id}", json={"notes": ""}).json()
+    assert body["transaction"]["notes"] is None
+
+
 def test_categories_crud(session):
     from app.main import app
 

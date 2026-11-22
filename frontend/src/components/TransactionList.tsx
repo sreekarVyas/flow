@@ -40,6 +40,7 @@ function Row({
       >
         <span className="min-w-0">
           <span className="block truncate font-medium">{title}</span>
+          {t.notes && <span className="block truncate text-sm text-ink-muted">“{t.notes}”</span>}
           <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             {t.kind == null ? (
               <span className="rounded-md bg-warn-soft px-1.5 py-0.5 text-xs font-medium text-warn">Needs a kind</span>

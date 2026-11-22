@@ -133,7 +133,10 @@ def similar(txn_id: int, session: Session = Depends(get_session)):
 
 @router.patch("/transactions/{txn_id}", response_model=TransactionPatchOut)
 def patch_transaction(txn_id: int, body: TransactionPatch, session: Session = Depends(get_session)):
-    """Tag by hand. Sets `confirmed`, learns a payee rule (debits), and can tag similar ones."""
+    """Tag by hand. Sets `confirmed`, learns a payee rule (debits), and can tag similar ones.
+
+    A body with only `notes` saves the note and changes nothing else.
+    """
     t = _get_txn(session, txn_id)
     sent = body.model_fields_set
 
@@ -148,14 +151,15 @@ def patch_transaction(txn_id: int, body: TransactionPatch, session: Session = De
     if "category_id" in sent:
         t.category_id = body.category_id
     if "notes" in sent:
-        t.notes = body.notes or None
+        t.notes = (body.notes or "").strip() or None
     if t.kind not in CATEGORIZABLE_KINDS:
         t.category_id = None
     if t.category_id is None:
         t.category_source = None
     elif tagged:
         t.category_source = "manual"
-    t.confirmed = True
+    if sent - {"notes"} or not sent:  # a note alone does not confirm the tag
+        t.confirmed = True
 
     rule = learn_rule(session, t) if tagged else None
 

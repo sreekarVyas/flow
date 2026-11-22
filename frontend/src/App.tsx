@@ -86,9 +86,9 @@ export default function App() {
   );
 
   const onSaved = useCallback(
-    (id: number, updatedSimilar: number) => {
-      markStamped(id);
-      setNotice(updatedSimilar > 0 ? `Saved. Also tagged ${updatedSimilar} similar ${updatedSimilar === 1 ? "payment" : "payments"}.` : "Saved.");
+    (id: number, updatedSimilar: number, noteSaved: boolean) => {
+      if (!noteSaved) markStamped(id);
+      setNotice(noteSaved ? "Note saved." : updatedSimilar > 0 ? `Saved. Also tagged ${updatedSimilar} similar ${updatedSimilar === 1 ? "payment" : "payments"}.` : "Saved.");
       timers.current.push(window.setTimeout(() => setNotice(""), 3000));
     },
     [markStamped],
