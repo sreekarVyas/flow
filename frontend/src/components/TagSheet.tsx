@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Category, type Kind, type Transaction } from "../api";
 import { hasCategory, KIND_LABEL, pushRecent, readRecent, useCategories } from "../categories";
 import { dayLabel, dayKey, money, timeLabel } from "../format";
+import { draftFromTxn, draftRequest, draftShares, SplitEditor, type SplitDraft } from "./SplitEditor";
 
 const KINDS: Kind[] = ["expense", "transfer", "settlement", "income", "refund"];
 
@@ -51,6 +52,7 @@ export function TagSheet({
   const [search, setSearch] = useState("");
   const [applySimilar, setApplySimilar] = useState(true);
   const [note, setNote] = useState(txn.notes ?? "");
+  const [split, setSplit] = useState<SplitDraft>(() => draftFromTxn(txn));
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const similar = useQuery({ queryKey: ["similar", txn.id], queryFn: () => api.similar(txn.id) });
@@ -58,25 +60,40 @@ export function TagSheet({
   const finalCategory = hasCategory(kind) ? categoryId : null;
   const tagChanged = kind !== txn.kind || finalCategory !== txn.category_id;
   const noteChanged = note.trim() !== (txn.notes ?? "");
-  const noteOnly = noteChanged && !tagChanged;
+  const canSplit = kind === "expense" && txn.direction === "debit";
+  const splitDirty = canSplit && split.dirty;
+  const splitPreview = draftShares(txn.amount, split);
+  const noteOnly = noteChanged && !tagChanged && !splitDirty;
+  const splitOnly = splitDirty && !tagChanged && !noteChanged; // no PATCH: no rule, no similar
 
   const save = useMutation({
-    mutationFn: () =>
-      noteOnly
-        ? api.patchTransaction(txn.id, { notes: note.trim() || null })
-        : api.patchTransaction(txn.id, {
-            kind,
-            category_id: finalCategory,
-            ...(noteChanged ? { notes: note.trim() || null } : {}),
-            apply_to_similar: applySimilar && (similar.data?.count ?? 0) > 0,
-          }),
-    onSuccess: (r) => {
+    mutationFn: async () => {
+      // A split expense must lose its split before its kind can change.
+      if (!canSplit && txn.splits.length) await api.putSplits(txn.id, { mode: "equal", include_me: true, people: [] });
+      let updatedSimilar = 0;
+      if (noteOnly) {
+        await api.patchTransaction(txn.id, { notes: note.trim() || null });
+      } else if (tagChanged || noteChanged || !splitDirty) {
+        const r = await api.patchTransaction(txn.id, {
+          kind,
+          category_id: finalCategory,
+          ...(noteChanged ? { notes: note.trim() || null } : {}),
+          apply_to_similar: applySimilar && (similar.data?.count ?? 0) > 0,
+        });
+        updatedSimilar = r.updated_similar;
+      }
+      if (splitDirty) await api.putSplits(txn.id, draftRequest(split));
+      return updatedSimilar;
+    },
+    onSuccess: (updatedSimilar) => {
       if (!noteOnly && finalCategory != null) pushRecent(finalCategory);
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["summary"] });
       qc.invalidateQueries({ queryKey: ["categorySummary"] });
       qc.invalidateQueries({ queryKey: ["rules"] });
-      onSaved(txn.id, r.updated_similar, noteOnly);
+      qc.invalidateQueries({ queryKey: ["people"] });
+      qc.invalidateQueries({ queryKey: ["person"] });
+      onSaved(txn.id, updatedSimilar, noteOnly);
       onClose();
     },
   });
@@ -124,7 +141,8 @@ export function TagSheet({
   const needsCategory = hasCategory(kind);
   const sim = similar.data;
   const selected = categoryId != null ? byId.get(categoryId) : undefined;
-  const canSave = kind != null && !save.isPending;
+  const splitBlocked = splitDirty && split.people.length > 0 && splitPreview.error != null;
+  const canSave = kind != null && !save.isPending && !splitBlocked;
 
   const chip = (id: number) => {
     const info = byId.get(id);
@@ -207,6 +225,13 @@ export function TagSheet({
             />
           </div>
 
+          {canSplit && <SplitEditor amount={txn.amount} draft={split} onChange={setSplit} />}
+          {!canSplit && txn.splits.length > 0 && (
+            <p className="rounded-lg bg-warn-soft px-3 py-2 text-sm text-warn">
+              Saving removes the split with {txn.splits.map((s) => s.person.display_name).join(", ")}.
+            </p>
+          )}
+
           {needsCategory && (
             <section aria-labelledby="cat-heading" className="space-y-4">
               <div className="flex items-baseline justify-between gap-2">
@@ -268,7 +293,7 @@ export function TagSheet({
         </div>
 
         <footer className="space-y-3 border-t border-line bg-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-          {!noteOnly && sim && sim.count > 0 && (
+          {!noteOnly && !splitOnly && sim && sim.count > 0 && (
             <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">
               <span>
                 Also tag {sim.count} other {sim.count === 1 ? "payment" : "payments"} {debit ? "to" : "from"}{" "}
@@ -287,7 +312,7 @@ export function TagSheet({
               />
             </label>
           )}
-          {!noteOnly && sim?.learns_rule && kind && (
+          {!noteOnly && !splitOnly && sim?.learns_rule && kind && (
             <p className="text-xs text-ink-muted">
               {needsCategory && selected
                 ? `Future payments to ${sim.payee} get ${selected.icon} ${selected.label}.`

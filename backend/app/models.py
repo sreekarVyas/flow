@@ -13,7 +13,7 @@ from sqlalchemy import (
     false,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 ACCOUNT_TYPES = ("bank", "credit_card")
@@ -22,6 +22,7 @@ KINDS = ("expense", "transfer", "settlement", "income", "refund")
 PARSE_STATUSES = ("txn", "ignored", "unknown")
 MATCH_FIELDS = ("payee", "name_contains", "vpa_contains")
 RULE_SOURCES = ("seed", "learned")
+PAID_BY = ("me", "person")
 
 
 def _in(col: str, values: tuple[str, ...]) -> str:
@@ -153,6 +154,49 @@ class Transaction(Base):
 
     account: Mapped[Account] = relationship()
     raw_email: Mapped[RawEmail | None] = relationship(back_populates="transaction")
+    splits: Mapped[list["Split"]] = relationship(
+        back_populates="transaction", cascade="all, delete-orphan", passive_deletes=True, order_by="Split.id"
+    )
+
+    @property
+    def my_share(self) -> Decimal:
+        """Amount minus the shares other people owe me. Splits must be loaded."""
+        return self.amount - sum((s.share_amount for s in self.splits if s.paid_by == "me"), Decimal("0"))
+
+
+class Person(Base):
+    __tablename__ = "people"
+    __table_args__ = (
+        CheckConstraint("name_key = lower(name_key) AND name_key <> ''", name="ck_people_name_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(100))
+    name_key: Mapped[str] = mapped_column(String(100), unique=True)
+    # Names the bank prints for this person (e.g. "A B NAME"), for repayment suggestions.
+    match_names: Mapped[list[str]] = mapped_column(ARRAY(String(255)), server_default="{}", default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Split(Base):
+    """paid_by = me: the person owes me share_amount. paid_by = person: I owe them."""
+
+    __tablename__ = "splits"
+    __table_args__ = (
+        UniqueConstraint("transaction_id", "person_id", name="uq_splits_transaction_person"),
+        CheckConstraint("share_amount > 0", name="ck_splits_share_positive"),
+        CheckConstraint(_in("paid_by", PAID_BY), name="ck_splits_paid_by"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id", ondelete="CASCADE"), index=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id"), index=True)
+    share_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    paid_by: Mapped[str] = mapped_column(String(6), server_default="me", default="me")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    transaction: Mapped[Transaction] = relationship(back_populates="splits")
+    person: Mapped[Person] = relationship()
 
 
 class GmailState(Base):

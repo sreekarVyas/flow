@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.transactions import Month, month_bounds
 from app.db import get_session
+from app.ledger import my_share_expr, others_share_subquery
 from app.models import Account, Category, Rule, Transaction
 from app.schemas import (
     CategoryCreate,
@@ -83,16 +84,18 @@ def category_summary(
     account_type: Literal["bank", "credit_card"] | None = None,
     session: Session = Depends(get_session),
 ):
-    """My spend per category: expense debits minus refund credits."""
+    """My spend per category: my share of expense debits, minus refund credits."""
     start, end = month_bounds(month)
+    others = others_share_subquery()
     signed = case(
-        ((Transaction.kind == "expense") & (Transaction.direction == "debit"), Transaction.amount),
+        ((Transaction.kind == "expense") & (Transaction.direction == "debit"), my_share_expr(others)),
         ((Transaction.kind == "refund") & (Transaction.direction == "credit"), -Transaction.amount),
         else_=Decimal("0"),
     )
     stmt = (
         select(Transaction.category_id, func.coalesce(func.sum(signed), Decimal("0")), func.count())
         .join(Transaction.account)
+        .outerjoin(others, others.c.transaction_id == Transaction.id)
         .where(Transaction.ts >= start, Transaction.ts < end, Transaction.kind.in_(("expense", "refund")))
         .group_by(Transaction.category_id)
     )

@@ -78,6 +78,16 @@ says "debited / credited / spent …" with an amount, so a transaction cannot be
 - `uv run python -m app.categorize --untagged` lists the payees no rule matches.
 - Edit categories and delete rules on the **Categories & rules** screen (link at the bottom of the list).
 
+## People & splits
+
+- **My spend = my share.** A split expense counts only my share in "My spend" and in the category totals;
+  the full amount stays visible on the row and in the bank / card tiles. Money from friends never counts as spending.
+- People are matched without regard to case or extra spaces: "John", "JOHN" and " john " are one person
+  (`people.name_key`). The first spelling is kept as the display name; rename it on the People screen.
+- Split a payment in its sheet: Equal (optionally without me), Exact ₹ or %. Rounding remainders stay with me.
+  `PUT /api/transactions/{id}/splits` replaces the split; an empty list removes it.
+- Balances are calculated from splits, never stored (`app/ledger.py`). Settlements (repayments) come next.
+
 ## Tests
 
 ```sh

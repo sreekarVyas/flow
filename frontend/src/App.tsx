@@ -5,6 +5,7 @@ import { hasCategory, useCategories } from "./categories";
 import { AccountFilter, type Filter } from "./components/AccountFilter";
 import { CategoryBreakdown, type CatFilter } from "./components/CategoryBreakdown";
 import { ManageCategories } from "./components/ManageCategories";
+import { PeopleScreen } from "./components/PeopleScreen";
 import { SummaryBar } from "./components/SummaryBar";
 import { TagSheet } from "./components/TagSheet";
 import { needsReview, TransactionList } from "./components/TransactionList";
@@ -17,7 +18,7 @@ const STAMP_MS = 1200;
 
 export default function App() {
   const qc = useQueryClient();
-  const [view, setView] = useState<"list" | "manage">("list");
+  const [view, setView] = useState<"list" | "manage" | "people">("list");
   const [filter, setFilter] = useState<Filter>("all");
   const [review, setReview] = useState(false);
   const [catFilter, setCatFilter] = useState<CatFilter>(null);
@@ -96,10 +97,24 @@ export default function App() {
 
   const closeSheet = useCallback(() => setSelected(null), []);
 
-  if (view === "manage") {
+  const overlays = (
+    <>
+      <p role="status" aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-30 flex justify-center px-4">
+        {notice && <span className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-paper shadow-lg">{notice}</span>}
+      </p>
+      {selected && <TagSheet key={selected.id} txn={selected} onClose={closeSheet} onSaved={onSaved} />}
+    </>
+  );
+
+  if (view !== "list") {
     return (
       <div className="mx-auto max-w-2xl px-4 pb-16 pt-[max(1rem,env(safe-area-inset-top))]">
-        <ManageCategories onBack={() => setView("list")} />
+        {view === "manage" ? (
+          <ManageCategories onBack={() => setView("list")} />
+        ) : (
+          <PeopleScreen onBack={() => setView("list")} onOpenTxn={setSelected} />
+        )}
+        {overlays}
       </div>
     );
   }
@@ -137,7 +152,7 @@ export default function App() {
         </p>
       )}
 
-      {s && <SummaryBar summary={s} />}
+      {s && <SummaryBar summary={s} onPeople={() => setView("people")} />}
 
       <div className="flex flex-wrap items-center gap-2">
         <AccountFilter value={filter} onChange={setFilter} />
@@ -193,17 +208,16 @@ export default function App() {
         )
       )}
 
-      <footer className="pt-2 text-center">
+      <footer className="flex justify-center gap-6 pt-2">
+        <button type="button" onClick={() => setView("people")} className="text-sm font-medium text-stamp hover:underline">
+          People
+        </button>
         <button type="button" onClick={() => setView("manage")} className="text-sm font-medium text-stamp hover:underline">
           Categories & rules
         </button>
       </footer>
 
-      <p role="status" aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-30 flex justify-center px-4">
-        {notice && <span className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-paper shadow-lg">{notice}</span>}
-      </p>
-
-      {selected && <TagSheet key={selected.id} txn={selected} onClose={closeSheet} onSaved={onSaved} />}
+      {overlays}
     </div>
   );
 }

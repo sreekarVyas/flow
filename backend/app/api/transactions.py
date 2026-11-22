@@ -4,15 +4,19 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
-from sqlalchemy.orm import Session, contains_eager
+from sqlalchemy.orm import Session, contains_eager, selectinload
 
 from app.categorize.rules import CATEGORIZABLE_KINDS, learn_rule, payee_key, similar_unconfirmed
 from app.config import settings
 from app.db import get_session
-from app.models import Account, Category, GmailState, RawEmail, Transaction
+from app.ledger import compute_shares, my_share_expr, others_share_subquery, person_balances
+from app.models import Account, Category, GmailState, Person, RawEmail, Split, Transaction
+from app.people import resolve_person
 from app.schemas import (
     RawEmailOut,
+    SharedTotals,
     SimilarOut,
+    SplitRequest,
     SummaryOut,
     TransactionOut,
     TransactionPatch,
@@ -39,6 +43,9 @@ def health(session: Session = Depends(get_session)) -> dict:
     return {"ok": True}
 
 
+WITH_SPLITS = selectinload(Transaction.splits).selectinload(Split.person)
+
+
 @router.get("/transactions", response_model=list[TransactionOut])
 def list_transactions(
     month: Month,
@@ -49,7 +56,7 @@ def list_transactions(
     stmt = (
         select(Transaction)
         .join(Transaction.account)
-        .options(contains_eager(Transaction.account))
+        .options(contains_eager(Transaction.account), WITH_SPLITS)
         .where(Transaction.ts >= start, Transaction.ts < end)
         .order_by(Transaction.ts.desc(), Transaction.id.desc())
     )
@@ -62,7 +69,9 @@ def list_transactions(
 def summary(month: Month, session: Session = Depends(get_session)):
     start, end = month_bounds(month)
     debit = Transaction.direction == "debit"
+    expense = debit & (Transaction.kind == "expense")
     zero = Decimal("0")
+    others = others_share_subquery()
     rows = session.execute(
         select(
             Account.type,
@@ -70,20 +79,30 @@ def summary(month: Month, session: Session = Depends(get_session)):
             func.count(case((debit, 1))),
             func.coalesce(func.sum(case((~debit, Transaction.amount))), zero),
             func.count(case((~debit, 1))),
-            func.coalesce(func.sum(case((debit & (Transaction.kind == "expense"), Transaction.amount))), zero),
+            func.coalesce(func.sum(case((expense, Transaction.amount))), zero),
             func.coalesce(func.sum(case((Transaction.kind == "transfer", Transaction.amount))), zero),
+            func.coalesce(func.sum(case((expense, my_share_expr(others)))), zero),
+            func.coalesce(func.sum(case((expense, others.c.others))), zero),
         )
         .join(Transaction.account)
+        .outerjoin(others, others.c.transaction_id == Transaction.id)
         .where(Transaction.ts >= start, Transaction.ts < end)
         .group_by(Account.type)
     ).all()
     totals = {
         r[0]: TypeTotals(
             debit_total=r[1], debit_count=r[2], credit_total=r[3], credit_count=r[4],
-            expense_total=r[5], transfer_total=r[6],
+            expense_total=r[5], transfer_total=r[6], my_share_total=r[7],
         )
         for r in rows
     }
+    balances = person_balances(session).values()
+    shared = SharedTotals(
+        others_share=sum((r[8] for r in rows), zero),
+        owed_to_me=sum((b.net for b in balances if b.net > 0), zero),
+        i_owe=sum((-b.net for b in balances if b.net < 0), zero),
+        people_owing=sum(1 for b in balances if b.net > 0),
+    )
     unknown = session.scalar(
         select(func.count()).where(
             RawEmail.parse_status == "unknown", RawEmail.received_at >= start, RawEmail.received_at < end
@@ -94,6 +113,7 @@ def summary(month: Month, session: Session = Depends(get_session)):
         month=month,
         bank=totals.get("bank", TypeTotals()),
         credit_card=totals.get("credit_card", TypeTotals()),
+        shared=shared,
         unknown_emails=unknown or 0,
         last_poll_at=state.last_poll_at if state else None,
         last_poll_result=state.last_poll_result if state else None,
@@ -145,6 +165,11 @@ def patch_transaction(txn_id: int, body: TransactionPatch, session: Session = De
         if cat is None or cat.archived:
             raise HTTPException(status_code=422, detail="unknown or hidden category")
 
+    if "kind" in sent and body.kind != "expense" and t.splits:
+        raise HTTPException(
+            status_code=409, detail="this expense is split with people; remove the split before changing its kind"
+        )
+
     tagged = bool(sent & {"kind", "category_id"})
     if "kind" in sent:
         t.kind = body.kind
@@ -174,3 +199,53 @@ def patch_transaction(txn_id: int, body: TransactionPatch, session: Session = De
 
     session.commit()
     return TransactionPatchOut(transaction=t, updated_similar=updated, rule=rule)
+
+
+@router.put("/transactions/{txn_id}/splits", response_model=TransactionOut)
+def put_splits(txn_id: int, body: SplitRequest, session: Session = Depends(get_session)):
+    """Replace who shares this expense. An empty `people` list removes the split.
+
+    People are found by id, or by name without regard to case (created when new).
+    The transaction becomes confirmed: a split means Siri has reviewed it.
+    """
+    t = _get_txn(session, txn_id)
+    if body.people and not (t.kind == "expense" and t.direction == "debit"):
+        raise HTTPException(status_code=422, detail="only expenses I paid can be split")
+
+    person_ids: list[int] = []
+    for p in body.people:
+        if p.person_id is not None:
+            if session.get(Person, p.person_id) is None:
+                raise HTTPException(status_code=422, detail=f"person {p.person_id} not found")
+            person_ids.append(p.person_id)
+        elif p.name:
+            try:
+                person_ids.append(resolve_person(session, p.name)[0].id)
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+        else:
+            raise HTTPException(status_code=422, detail="each person needs a person_id or a name")
+    if len(set(person_ids)) != len(person_ids):
+        raise HTTPException(status_code=422, detail="the same person is listed twice")
+
+    try:
+        shares = compute_shares(t.amount, body.mode, [p.value for p in body.people], body.include_me)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    # Update in place so split ids stay stable (settlement links will point at them).
+    current = {s.person_id: s for s in t.splits if s.paid_by == "me"}
+    for pid, share in zip(person_ids, shares, strict=True):
+        if pid in current:
+            current.pop(pid).share_amount = share
+        else:
+            t.splits.append(Split(person_id=pid, share_amount=share, paid_by="me"))
+    for gone in current.values():
+        t.splits.remove(gone)
+    if body.people:
+        t.confirmed = True
+
+    session.commit()
+    return session.scalars(
+        select(Transaction).where(Transaction.id == t.id).options(WITH_SPLITS).execution_options(populate_existing=True)
+    ).one()

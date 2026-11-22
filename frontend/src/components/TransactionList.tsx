@@ -31,6 +31,7 @@ function Row({
   const debit = t.direction === "debit";
   const title = t.counterparty_name || t.vpa_or_merchant || "Unknown payee";
   const state = chipState(t);
+  const shared = t.splits.filter((s) => s.paid_by === "me");
   return (
     <li className="flex items-stretch">
       <button
@@ -52,14 +53,22 @@ function Row({
             ) : (
               <span className="text-xs font-medium text-ink-muted">{KIND_LABEL[t.kind]}</span>
             )}
+            {shared.length > 0 && (
+              <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-medium">
+                Split with {shared.map((s) => s.person.display_name).join(", ")}
+              </span>
+            )}
             <span className="text-xs text-ink-muted">
               {t.account.name}, {timeLabel(t.ts)}
             </span>
           </span>
         </span>
-        <span className={`shrink-0 font-semibold ${debit ? "text-out" : "text-in"}`}>
-          {debit ? "−" : "+"}
-          {money(t.amount)}
+        <span className="shrink-0 text-right">
+          <span className={`block font-semibold ${debit ? "text-out" : "text-in"}`}>
+            {debit ? "−" : "+"}
+            {money(t.amount)}
+          </span>
+          {shared.length > 0 && <span className="block text-xs text-ink-muted">you {money(t.my_share)}</span>}
         </span>
       </button>
       {state === "pencil" && (

@@ -24,6 +24,44 @@ export interface Transaction {
   confirmed: boolean;
   notes: string | null;
   account: Account;
+  splits: Split[];
+  my_share: string; // amount minus other people's shares
+}
+
+export interface PersonRef {
+  id: number;
+  display_name: string;
+}
+
+export interface Split {
+  id: number;
+  person: PersonRef;
+  share_amount: string;
+  paid_by: "me" | "person";
+}
+
+export type SplitMode = "equal" | "exact" | "percent";
+
+export interface SplitRequest {
+  mode: SplitMode;
+  include_me: boolean;
+  people: { person_id?: number; name?: string; value?: string }[];
+}
+
+export interface Person {
+  id: number;
+  display_name: string;
+  owed_to_me: string;
+  i_owe: string;
+  received: string;
+  paid: string;
+  net: string; // + they owe me, - I owe them
+  shares: number;
+}
+
+export interface PersonDetail extends Person {
+  match_names: string[];
+  history: { split_id: number; share_amount: string; paid_by: "me" | "person"; transaction: Transaction }[];
 }
 
 export interface Category {
@@ -94,6 +132,14 @@ export interface TypeTotals {
   credit_count: number;
   expense_total: string;
   transfer_total: string;
+  my_share_total: string;
+}
+
+export interface SharedTotals {
+  others_share: string;
+  owed_to_me: string;
+  i_owe: string;
+  people_owing: number;
 }
 
 export interface PollResult {
@@ -107,6 +153,7 @@ export interface Summary {
   month: string;
   bank: TypeTotals;
   credit_card: TypeTotals;
+  shared: SharedTotals;
   unknown_emails: number;
   last_poll_at: string | null;
   last_poll_result: PollResult | null;
@@ -167,6 +214,14 @@ export const api = {
   patchTransaction: (id: number, body: TransactionPatch) =>
     request<PatchResult>(`/api/transactions/${id}`, json("PATCH", body)),
   similar: (id: number) => request<Similar>(`/api/transactions/${id}/similar`),
+
+  putSplits: (id: number, body: SplitRequest) => request<Transaction>(`/api/transactions/${id}/splits`, json("PUT", body)),
+
+  people: (q?: string) => request<Person[]>(`/api/people${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  person: (id: number) => request<PersonDetail>(`/api/people/${id}`),
+  createPerson: (name: string) => request<Person>("/api/people", json("POST", { name })),
+  renamePerson: (id: number, display_name: string) => request<Person>(`/api/people/${id}`, json("PATCH", { display_name })),
+  deletePerson: (id: number) => request<void>(`/api/people/${id}`, { method: "DELETE" }),
 
   rules: () => request<Rule[]>("/api/rules"),
   deleteRule: (id: number) => request<void>(`/api/rules/${id}`, { method: "DELETE" }),
