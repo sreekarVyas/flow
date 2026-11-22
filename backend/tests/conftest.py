@@ -40,6 +40,9 @@ def session(migrated_db):
     from app.db import SessionLocal
 
     with migrated_db.begin() as c:
-        c.execute(text("TRUNCATE transactions, raw_emails, accounts, gmail_state RESTART IDENTITY CASCADE"))
+        c.execute(text("TRUNCATE transactions, raw_emails, accounts, gmail_state, splits, people, settlement_links, payment_sources RESTART IDENTITY CASCADE"))
+        # Keep the seed categories and rules from migration 0002; drop what tests added.
+        c.execute(text("DELETE FROM rules WHERE source = 'learned'"))
+        c.execute(text("DELETE FROM categories WHERE NOT is_seed"))
     with SessionLocal() as s:
         yield s

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.gmail.client import FetchedEmail
+from app.categorize.rules import load_rules
 from app.ingest.store import apply_classification
 from app.models import GmailState, RawEmail
 
@@ -67,6 +68,7 @@ def poll_once(session: Session, source: MailSource, since: date | None = None) -
     new_ids = [i for i in ids if i not in known]
 
     counts: Counter[str] = Counter()
+    rules = load_rules(session) if new_ids else []
     for msg_id in reversed(new_ids):  # oldest first
         fe = source.get_message(msg_id)
         allowed = fe.sender in senders
@@ -85,7 +87,7 @@ def poll_once(session: Session, source: MailSource, since: date | None = None) -
         session.add(raw)
         session.flush()
         if allowed:
-            status = apply_classification(session, raw, settings.tz)
+            status = apply_classification(session, raw, settings.tz, rules)
         else:
             raw.parse_status, raw.parser_name = "ignored", "sender_not_allowed"
             status = "ignored"

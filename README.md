@@ -44,6 +44,7 @@ uv run alembic upgrade head
 uv run python -m app.gmail.auth            # browser consent, once
 uv run python -m app.ingest.poller         # first poll: mail since 31 Oct
 uv run python -m app.ingest.survey         # see unparsed email formats
+uv run python -m app.categorize            # tag stored transactions with the category rules
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 cd ../frontend
@@ -63,6 +64,48 @@ The API polls Gmail every 10 min (`POLL_INTERVAL_SECONDS`). The UI has a **Sync 
 
 Transaction parsers always run before ignore rules. An ignore rule never matches an email that
 says "debited / credited / spent …" with an amount, so a transaction cannot be silently dropped.
+
+## Categories & rules
+
+- Migration `0002` seeds a two-level category list (19 parents) and built-in name rules.
+- New transactions get a category from the rules at ingest (`category_source = rule`, not confirmed).
+  Only `expense` and `refund` transactions carry a category.
+- Rule order: a learned **payee** rule (exact name), then the longest **name contains** / **UPI ID contains** match.
+  Name rules look at the payee name only, because the masked VPA carries PSP names such as `rxairtel`.
+- Tag by hand in the UI (tap a row). This confirms the transaction and saves a payee rule (debits only).
+  "Also tag N other payments" applies the same tag to unconfirmed payments to that payee.
+- Confirmed transactions keep their kind and category on reparse and on `app.categorize`.
+- `uv run python -m app.categorize --untagged` lists the payees no rule matches.
+- Edit categories and delete rules on the **Categories & rules** screen (link at the bottom of the list).
+
+## People & splits
+
+- **My spend = my share.** A split expense counts only my share in "My spend" and in the category totals;
+  the full amount stays visible on the row and in the bank / card tiles. Money from friends never counts as spending.
+- People are matched without regard to case or extra spaces: "John", "JOHN" and " john " are one person
+  (`people.name_key`). The first spelling is kept as the display name; rename it on the People screen.
+- Split a payment in its sheet: Equal (optionally without me), Exact ₹ or %. Rounding remainders stay with me.
+  `PUT /api/transactions/{id}/splits` replaces the split; an empty list removes it.
+- Balances are calculated from splits and repayments, never stored (`app/ledger.py`).
+
+## Repayments (settlements)
+
+- Mark money from a friend as **Settlement**, choose the person, and tag it to earlier payments.
+  One repayment can be spread over several payments (₹600 → ₹250 + ₹350); one share can be settled by several repayments.
+  - Full amount of their share → the share is **cancelled out** (settled).
+  - Less → the rest stays **owed**. More → shown as **overpaid**; tag the money you sent back to the same
+    payment and it nets out (₹2,500 in, ₹1,000 back → ₹1,500 applied).
+  - A payment that was not split: tagging a repayment creates that person's share from it
+    (the whole payment when the amounts match). Set "their share" to record a bigger share than was repaid.
+- The same can be done from the original payment ("Paid back" → Tag a repayment). Both write the same rows
+  (`app/settle.py`). Untagged repayment money still counts in the person's balance.
+- Original transaction amounts never change. A repayment is never income or spending.
+- **Nicknames for payment sources.** A settlement shows who paid (bank-printed name + UPI ID) and a
+  **Nickname** field. The nickname is the person: two UPI IDs with the same nickname (any case) are one
+  person; different nicknames are different people. A UPI ID nicknamed once is filled in automatically
+  next time; a new UPI ID with a known printed name gets the nickname as a marked guess.
+  Splits use the same nicknames. Fix mistakes on the person page: "Forget" a UPI ID, or rename a
+  nickname to an existing one to **merge** the two (shares, repayments and UPI IDs move over).
 
 ## Tests
 

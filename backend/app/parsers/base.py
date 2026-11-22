@@ -132,9 +132,22 @@ def infer_kind(
     p: ParsedTxn, self_names: Sequence[str] = (), salary_payers: Sequence[str] = ()
 ) -> str | None:
     """`self_names` / `salary_payers` come from settings (.env), so personal data stays out of code."""
-    text = " ".join(filter(None, [p.counterparty_name, p.vpa_or_merchant])).upper()
-    if p.account_type == "bank":
-        if p.direction == "debit":
+    return infer_kind_from(
+        p.account_type, p.direction, p.counterparty_name, p.vpa_or_merchant, self_names, salary_payers
+    )
+
+
+def infer_kind_from(
+    account_type: str,
+    direction: str,
+    counterparty_name: str | None,
+    vpa_or_merchant: str | None,
+    self_names: Sequence[str] = (),
+    salary_payers: Sequence[str] = (),
+) -> str | None:
+    text = " ".join(filter(None, [counterparty_name, vpa_or_merchant])).upper()
+    if account_type == "bank":
+        if direction == "debit":
             # Card bill: via CRED (VPA cred.club@axisb; HDFC masks it to ****club@axisb)
             # or via HDFC NetBanking. Plain "CRED" with ...lity@axisb is a utility bill: an expense.
             if "CRED CLUB" in text or "CLUB@AXISB" in text or "CREDIT CARD BILL" in text:
@@ -146,6 +159,6 @@ def infer_kind(
             return "income"
         return None  # credit: settlement / pass-through / refund -> review
     # credit card
-    if p.direction == "debit":
+    if direction == "debit":
         return "expense"
     return None  # card credit: bill payment or refund -> review

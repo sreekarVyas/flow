@@ -1,54 +1,121 @@
-import type { ReactNode } from "react";
-import type { Kind, Transaction } from "../api";
+import type { Transaction } from "../api";
+import { hasCategory, KIND_LABEL, type CatInfo } from "../categories";
 import { dayKey, dayLabel, money, timeLabel } from "../format";
+import { CategoryChip, type ChipState } from "./CategoryChip";
 
-const KIND_STYLE: Record<Kind, string> = {
-  expense: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  transfer: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
-  settlement: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
-  income: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  refund: "bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300",
-};
-
-function Badge({ className, children }: { className: string; children: ReactNode }) {
-  return <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${className}`}>{children}</span>;
+export function chipState(t: Transaction): ChipState {
+  if (t.category_id == null) return "empty";
+  return t.confirmed || t.category_source === "manual" ? "stamp" : "pencil";
 }
 
-function Row({ t }: { t: Transaction }) {
+/** Needs Siri: no kind, an expense with no category, or a rule's guess not yet confirmed. */
+export function needsReview(t: Transaction): boolean {
+  if (t.kind == null) return true;
+  if (!hasCategory(t.kind)) return false;
+  return t.category_id == null || !t.confirmed;
+}
+
+function Row({
+  t,
+  info,
+  stamped,
+  onSelect,
+  onConfirm,
+}: {
+  t: Transaction;
+  info?: CatInfo;
+  stamped: boolean;
+  onSelect: (t: Transaction) => void;
+  onConfirm: (t: Transaction) => void;
+}) {
   const debit = t.direction === "debit";
-  const title = t.counterparty_name || t.vpa_or_merchant || "Unknown";
+  const title = t.counterparty_name || t.vpa_or_merchant || "Unknown payee";
+  const state = chipState(t);
+  const shared = t.splits.filter((s) => s.paid_by === "me");
+  const owed = shared.reduce((sum, s) => sum + Number(s.outstanding), 0);
   return (
-    <li className="flex items-start justify-between gap-3 px-4 py-3">
-      <div className="min-w-0">
-        <div className="truncate font-medium">{title}</div>
-        {t.vpa_or_merchant && t.vpa_or_merchant !== title && (
-          <div className="truncate text-xs text-slate-500 dark:text-slate-400">{t.vpa_or_merchant}</div>
-        )}
-        <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          <Badge className="bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{t.account.name}</Badge>
-          {t.kind ? (
-            <Badge className={KIND_STYLE[t.kind]}>{t.kind}</Badge>
-          ) : (
-            <Badge className="bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300">to review</Badge>
-          )}
-          <span className="text-xs text-slate-400">{timeLabel(t.ts)}</span>
-        </div>
-      </div>
-      <div
-        className={`shrink-0 font-semibold tabular-nums ${
-          debit ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"
-        }`}
+    <li className="flex items-stretch">
+      <button
+        type="button"
+        onClick={() => onSelect(t)}
+        className="flex min-w-0 flex-1 items-start justify-between gap-3 px-4 py-3 text-left hover:bg-surface-2/60 focus-visible:bg-surface-2/60"
       >
-        {debit ? "−" : "+"}
-        {money(t.amount)}
-      </div>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">{title}</span>
+          {t.notes && <span className="block truncate text-sm text-ink-muted">“{t.notes}”</span>}
+          <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+            {t.kind == null ? (
+              <span className="rounded-md bg-warn-soft px-1.5 py-0.5 text-xs font-medium text-warn">Needs a kind</span>
+            ) : hasCategory(t.kind) ? (
+              <>
+                <CategoryChip info={info} state={state} animate={stamped} />
+                {t.kind === "refund" && <span className="text-xs text-ink-muted">Refund</span>}
+              </>
+            ) : (
+              t.kind === "settlement" && t.person ? (
+                <>
+                  <span className="rounded-md border border-in/40 px-1.5 py-0.5 text-xs font-medium text-in">
+                    {debit ? "Paid back to" : "From"} {t.person.display_name}
+                  </span>
+                  {Number(t.unapplied) > 0 && (
+                    <span className="text-xs text-ink-muted">{money(t.unapplied)} not tagged</span>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs font-medium text-ink-muted">{KIND_LABEL[t.kind]}</span>
+              )
+            )}
+            {shared.length > 0 && (
+              <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-medium">
+                Split with {shared.map((s) => s.person.display_name).join(", ")}
+                {owed > 0 ? `, ${money(owed)} owed` : owed === 0 && shared.some((s) => s.links.length) ? ", settled" : ""}
+              </span>
+            )}
+            <span className="text-xs text-ink-muted">
+              {t.account.name}, {timeLabel(t.ts)}
+            </span>
+          </span>
+        </span>
+        <span className="shrink-0 text-right">
+          <span className={`block font-semibold ${debit ? "text-out" : "text-in"}`}>
+            {debit ? "−" : "+"}
+            {money(t.amount)}
+          </span>
+          {shared.length > 0 && <span className="block text-xs text-ink-muted">you {money(t.my_share)}</span>}
+        </span>
+      </button>
+      {state === "pencil" && (
+        <button
+          type="button"
+          onClick={() => onConfirm(t)}
+          aria-label={`Confirm ${info?.label ?? "category"} for ${title}`}
+          title="Confirm this tag"
+          className="flex w-12 shrink-0 items-center justify-center border-l border-line text-lg text-stamp hover:bg-stamp-soft"
+        >
+          ✓
+        </button>
+      )}
     </li>
   );
 }
 
-export function TransactionList({ items }: { items: Transaction[] }) {
+export function TransactionList({
+  items,
+  byId,
+  stampedIds,
+  emptyText,
+  onSelect,
+  onConfirm,
+}: {
+  items: Transaction[];
+  byId: Map<number, CatInfo>;
+  stampedIds: Set<number>;
+  emptyText: string;
+  onSelect: (t: Transaction) => void;
+  onConfirm: (t: Transaction) => void;
+}) {
   if (items.length === 0) {
-    return <p className="py-12 text-center text-sm text-slate-500">No transactions for this filter yet.</p>;
+    return <p className="py-12 text-center text-sm text-ink-muted">{emptyText}</p>;
   }
   const groups = new Map<string, Transaction[]>();
   for (const t of items) {
@@ -60,14 +127,21 @@ export function TransactionList({ items }: { items: Transaction[] }) {
       {[...groups].map(([day, txns]) => {
         const out = txns.filter((t) => t.direction === "debit").reduce((s, t) => s + Number(t.amount), 0);
         return (
-          <section key={day}>
-            <h2 className="mb-1 flex justify-between px-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          <section key={day} aria-label={dayLabel(day)}>
+            <h2 className="mb-1 flex justify-between px-1 text-sm font-semibold text-ink-muted">
               <span>{dayLabel(day)}</span>
-              {out > 0 && <span className="tabular-nums">out {money(out)}</span>}
+              {out > 0 && <span className="font-medium">{money(out)} out</span>}
             </h2>
-            <ul className="divide-y divide-slate-100 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200 dark:divide-slate-800 dark:bg-slate-900 dark:ring-slate-800">
+            <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
               {txns.map((t) => (
-                <Row key={t.id} t={t} />
+                <Row
+                  key={t.id}
+                  t={t}
+                  info={t.category_id != null ? byId.get(t.category_id) : undefined}
+                  stamped={stampedIds.has(t.id)}
+                  onSelect={onSelect}
+                  onConfirm={onConfirm}
+                />
               ))}
             </ul>
           </section>
