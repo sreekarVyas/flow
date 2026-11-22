@@ -95,6 +95,8 @@ def learn_rule(session: Session, txn: Transaction) -> Rule | None:
     if txn.direction != "debit" or key is None:
         return None
     kind = txn.kind if txn.kind != inferred_kind(txn) else None
+    if kind == "settlement":
+        kind = None  # a payment to a friend is not always a repayment: never automate it
     category_id = txn.category_id if txn.kind in CATEGORIZABLE_KINDS else None
 
     rule = session.scalar(

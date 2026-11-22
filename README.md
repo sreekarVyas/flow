@@ -86,7 +86,26 @@ says "debited / credited / spent …" with an amount, so a transaction cannot be
   (`people.name_key`). The first spelling is kept as the display name; rename it on the People screen.
 - Split a payment in its sheet: Equal (optionally without me), Exact ₹ or %. Rounding remainders stay with me.
   `PUT /api/transactions/{id}/splits` replaces the split; an empty list removes it.
-- Balances are calculated from splits, never stored (`app/ledger.py`). Settlements (repayments) come next.
+- Balances are calculated from splits and repayments, never stored (`app/ledger.py`).
+
+## Repayments (settlements)
+
+- Mark money from a friend as **Settlement**, choose the person, and tag it to earlier payments.
+  One repayment can be spread over several payments (₹600 → ₹250 + ₹350); one share can be settled by several repayments.
+  - Full amount of their share → the share is **cancelled out** (settled).
+  - Less → the rest stays **owed**. More → shown as **overpaid**; tag the money you sent back to the same
+    payment and it nets out (₹2,500 in, ₹1,000 back → ₹1,500 applied).
+  - A payment that was not split: tagging a repayment creates that person's share from it
+    (the whole payment when the amounts match). Set "their share" to record a bigger share than was repaid.
+- The same can be done from the original payment ("Paid back" → Tag a repayment). Both write the same rows
+  (`app/settle.py`). Untagged repayment money still counts in the person's balance.
+- Original transaction amounts never change. A repayment is never income or spending.
+- **Nicknames for payment sources.** A settlement shows who paid (bank-printed name + UPI ID) and a
+  **Nickname** field. The nickname is the person: two UPI IDs with the same nickname (any case) are one
+  person; different nicknames are different people. A UPI ID nicknamed once is filled in automatically
+  next time; a new UPI ID with a known printed name gets the nickname as a marked guess.
+  Splits use the same nicknames. Fix mistakes on the person page: "Forget" a UPI ID, or rename a
+  nickname to an existing one to **merge** the two (shares, repayments and UPI IDs move over).
 
 ## Tests
 

@@ -11,11 +11,13 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
 from sqlalchemy import case, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import Subquery
 
-from app.models import Split, Transaction
+from app.models import SettlementLink, Split, Transaction
+
+Settlement = aliased(Transaction, name="settlement")
 
 PAISA = Decimal("0.01")
 ZERO = Decimal("0")
@@ -85,8 +87,8 @@ class Balance:
 
     owed_to_me: Decimal = ZERO  # their shares of expenses I paid
     i_owe: Decimal = ZERO  # my shares of expenses they paid (friend-paid, later)
-    received: Decimal = ZERO  # repayments from them (settlements, later)
-    paid: Decimal = ZERO  # repayments to them (settlements, later)
+    received: Decimal = ZERO  # settlements from them (credits)
+    paid: Decimal = ZERO  # settlements to them (debits)
     shares: int = 0
 
     @property
@@ -103,6 +105,31 @@ def person_balances(session: Session, person_ids: list[int] | None = None) -> di
     ).group_by(Split.person_id)
     if person_ids is not None:
         stmt = stmt.where(Split.person_id.in_(person_ids))
-    return {
-        pid: Balance(owed_to_me=me, i_owe=them, shares=n) for pid, me, them, n in session.execute(stmt)
-    }
+    out = {pid: Balance(owed_to_me=me, i_owe=them, shares=n) for pid, me, them, n in session.execute(stmt)}
+
+    # Repayments count as soon as they are marked, linked to a payment or not.
+    pay = select(
+        Transaction.person_id,
+        func.coalesce(func.sum(case((Transaction.direction == "credit", Transaction.amount))), ZERO),
+        func.coalesce(func.sum(case((Transaction.direction == "debit", Transaction.amount))), ZERO),
+    ).where(Transaction.kind == "settlement", Transaction.person_id.is_not(None)).group_by(Transaction.person_id)
+    if person_ids is not None:
+        pay = pay.where(Transaction.person_id.in_(person_ids))
+    for pid, received, paid in session.execute(pay):
+        b = out.setdefault(pid, Balance())
+        b.received, b.paid = received, paid
+    return out
+
+
+def recovered_on(session: Session, expense_ids_stmt) -> Decimal:
+    """Net repaid (settling links minus returned overpayments) on shares of the given expenses."""
+    settles = (Split.paid_by == "me") == (Settlement.direction == "credit")
+    signed = case((settles, SettlementLink.amount), else_=-SettlementLink.amount)
+    total = session.scalar(
+        select(func.coalesce(func.sum(signed), ZERO))
+        .select_from(SettlementLink)
+        .join(Split, Split.id == SettlementLink.split_id)
+        .join(Settlement, Settlement.id == SettlementLink.settlement_txn_id)
+        .where(Split.transaction_id.in_(expense_ids_stmt))
+    )
+    return total or ZERO

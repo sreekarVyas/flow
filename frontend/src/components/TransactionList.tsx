@@ -32,6 +32,7 @@ function Row({
   const title = t.counterparty_name || t.vpa_or_merchant || "Unknown payee";
   const state = chipState(t);
   const shared = t.splits.filter((s) => s.paid_by === "me");
+  const owed = shared.reduce((sum, s) => sum + Number(s.outstanding), 0);
   return (
     <li className="flex items-stretch">
       <button
@@ -51,11 +52,23 @@ function Row({
                 {t.kind === "refund" && <span className="text-xs text-ink-muted">Refund</span>}
               </>
             ) : (
-              <span className="text-xs font-medium text-ink-muted">{KIND_LABEL[t.kind]}</span>
+              t.kind === "settlement" && t.person ? (
+                <>
+                  <span className="rounded-md border border-in/40 px-1.5 py-0.5 text-xs font-medium text-in">
+                    {debit ? "Paid back to" : "From"} {t.person.display_name}
+                  </span>
+                  {Number(t.unapplied) > 0 && (
+                    <span className="text-xs text-ink-muted">{money(t.unapplied)} not tagged</span>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs font-medium text-ink-muted">{KIND_LABEL[t.kind]}</span>
+              )
             )}
             {shared.length > 0 && (
               <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-medium">
                 Split with {shared.map((s) => s.person.display_name).join(", ")}
+                {owed > 0 ? `, ${money(owed)} owed` : owed === 0 && shared.some((s) => s.links.length) ? ", settled" : ""}
               </span>
             )}
             <span className="text-xs text-ink-muted">

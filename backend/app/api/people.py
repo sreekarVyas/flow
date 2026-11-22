@@ -3,12 +3,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.transactions import WITH_SPLITS
+from app.api.transactions import TXN_LOAD
 from app.db import get_session
 from app.ledger import Balance, person_balances
-from app.models import Person, Split, Transaction
-from app.people import clean_name, name_key, resolve_person
-from app.schemas import PersonCreate, PersonDetail, PersonOut, PersonShare, PersonUpdate
+from app.models import PaymentSource, Person, SettlementLink, Split, Transaction
+from app.people import clean_name, merge_people, name_key, resolve_person
+from app.schemas import MergeRequest, PersonCreate, PersonDetail, PersonOut, PersonShare, PersonUpdate
 
 router = APIRouter(prefix="/api")
 
@@ -89,7 +89,7 @@ def person_detail(person_id: int, session: Session = Depends(get_session)):
         select(Split)
         .join(Split.transaction)
         .where(Split.person_id == p.id)
-        .options(selectinload(Split.transaction).selectinload(Transaction.account), selectinload(Split.transaction).options(WITH_SPLITS))
+        .options(selectinload(Split.transaction).options(*TXN_LOAD), selectinload(Split.links).selectinload(SettlementLink.settlement))
         .order_by(Transaction.ts.desc())
     ).all()
     base = _out(p, person_balances(session, [p.id]).get(p.id))
@@ -97,7 +97,41 @@ def person_detail(person_id: int, session: Session = Depends(get_session)):
         **base.model_dump(),
         match_names=p.match_names,
         history=[
-            PersonShare(split_id=s.id, share_amount=s.share_amount, paid_by=s.paid_by, transaction=s.transaction)
+            PersonShare(
+                split_id=s.id, share_amount=s.share_amount, settled=s.settled, outstanding=s.outstanding,
+                paid_by=s.paid_by, transaction=s.transaction,
+            )
             for s in splits
         ],
+        sources=list(session.scalars(
+            select(PaymentSource).where(PaymentSource.person_id == p.id).order_by(PaymentSource.created_at)
+        )),
+        repayments=list(session.scalars(
+            select(Transaction)
+            .where(Transaction.kind == "settlement", Transaction.person_id == p.id)
+            .options(*TXN_LOAD)
+            .order_by(Transaction.ts.desc())
+        )),
     )
+
+
+@router.post("/people/{person_id}/merge", response_model=PersonOut)
+def merge(person_id: int, body: MergeRequest, session: Session = Depends(get_session)):
+    """Same person under two nicknames: move everything of this one into `into_id` and delete it."""
+    src, dst = _get(session, person_id), _get(session, body.into_id)
+    if src.id == dst.id:
+        raise HTTPException(status_code=422, detail="a person cannot be merged into themselves")
+    merge_people(session, src, dst)
+    session.commit()
+    return _out(dst, person_balances(session, [dst.id]).get(dst.id))
+
+
+@router.delete("/payment-sources/{source_id}", status_code=204)
+def forget_source(source_id: int, session: Session = Depends(get_session)):
+    """Forget a UPI ID's nickname (it was given to the wrong person). Past repayments stay as they are."""
+    src = session.get(PaymentSource, source_id)
+    if src is None:
+        raise HTTPException(status_code=404, detail="payment source not found")
+    session.delete(src)
+    session.commit()
+    return Response(status_code=204)

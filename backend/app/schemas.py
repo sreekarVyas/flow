@@ -24,12 +24,54 @@ class PersonRef(BaseModel):
     display_name: str
 
 
+class TxnBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    ts: datetime
+    amount: Decimal
+    direction: str
+    counterparty_name: str | None
+    vpa_or_merchant: str | None
+
+
+class LinkFromSettlement(BaseModel):
+    """On a share: one repayment applied to it."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    amount: Decimal
+    settles: bool  # False = money returned to them (re-opens the share)
+    settlement: TxnBrief
+
+
 class SplitOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     person: PersonRef
     share_amount: Decimal
     paid_by: str
+    origin: str
+    settled: Decimal
+    outstanding: Decimal  # negative = overpaid
+    links: list[LinkFromSettlement] = []
+
+
+class SplitBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    share_amount: Decimal
+    outstanding: Decimal
+    transaction: TxnBrief
+
+
+class LinkToShare(BaseModel):
+    """On a repayment: one share it is applied to."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    amount: Decimal
+    settles: bool
+    split: SplitBrief
 
 
 class TransactionOut(BaseModel):
@@ -50,6 +92,76 @@ class TransactionOut(BaseModel):
     account: AccountOut
     splits: list[SplitOut] = []
     my_share: Decimal  # amount minus other people's shares
+    person: PersonRef | None = None  # settlements: who it is from / to
+    links_out: list[LinkToShare] = []  # settlements: the shares it pays
+    unapplied: Decimal  # settlements: part not tagged to any payment
+
+
+class SettlementLinkIn(BaseModel):
+    transaction_id: int  # the earlier payment
+    amount: Decimal = Field(gt=0)
+    share: Decimal | None = Field(default=None, gt=0)  # only when that person has no share on it yet
+
+
+class SettlementRequest(BaseModel):
+    """Mark a transaction as a repayment from / to a person and tag it to earlier payments."""
+
+    person_id: int | None = None
+    name: str | None = Field(default=None, max_length=100)
+    nickname: str | None = Field(default=None, max_length=100)  # for the payment source; same as name
+    links: list[SettlementLinkIn] = Field(default=[], max_length=50)
+
+
+class RepaymentRequest(BaseModel):
+    """From the original payment: tag a repayment transaction against it."""
+
+    settlement_txn_id: int
+    amount: Decimal = Field(gt=0)
+    person_id: int | None = None  # needed when the repayment has no person yet
+    name: str | None = Field(default=None, max_length=100)
+    nickname: str | None = Field(default=None, max_length=100)  # for the repayment's payment source
+    share: Decimal | None = Field(default=None, gt=0)
+
+
+class SourceOut(BaseModel):
+    """The other side of a transaction as the bank prints it, and its nickname."""
+
+    printed_name: str | None
+    vpa: str | None
+    person: PersonRef | None  # known nickname, or the best guess
+    known: bool  # this exact name + UPI ID already has this nickname
+    suggestion: str  # prefill for the nickname field
+
+
+class PaymentSourceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    printed_name: str | None
+    vpa: str
+
+
+class MergeRequest(BaseModel):
+    into_id: int
+
+
+class SettleCandidate(BaseModel):
+    transaction: "TransactionOut"
+    share: SplitBrief | None  # the person's share on it, if any
+    linked_amount: Decimal  # already tagged from this repayment
+
+
+class SettleCandidatesOut(BaseModel):
+    suggested_person: PersonRef | None
+    items: list[SettleCandidate]
+
+
+class RepaymentCandidate(BaseModel):
+    transaction: "TransactionOut"
+    linked_amount: Decimal  # already tagged to this payment
+
+
+class RepaymentCandidatesOut(BaseModel):
+    items: list[RepaymentCandidate]
 
 
 class SplitPerson(BaseModel):
@@ -88,6 +200,8 @@ class PersonOut(BaseModel):
 class PersonShare(BaseModel):
     split_id: int
     share_amount: Decimal
+    settled: Decimal
+    outstanding: Decimal  # negative = overpaid
     paid_by: str
     transaction: TransactionOut
 
@@ -95,6 +209,8 @@ class PersonShare(BaseModel):
 class PersonDetail(PersonOut):
     match_names: list[str]
     history: list[PersonShare]
+    repayments: list[TransactionOut]  # settlements from / to them, newest first
+    sources: list[PaymentSourceOut]  # UPI IDs nicknamed as this person
 
 
 class TransactionPatch(BaseModel):
@@ -186,6 +302,7 @@ class TypeTotals(BaseModel):
 
 class SharedTotals(BaseModel):
     others_share: Decimal = Decimal("0")  # this month: what others owe on my expenses
+    recovered: Decimal = Decimal("0")  # this month's shared expenses: net repaid so far
     owed_to_me: Decimal = Decimal("0")  # all time: sum of positive person balances
     i_owe: Decimal = Decimal("0")  # all time: sum of negative person balances, as a positive number
     people_owing: int = 0

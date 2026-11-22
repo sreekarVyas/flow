@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session, contains_eager, selectinload
 from app.categorize.rules import CATEGORIZABLE_KINDS, learn_rule, payee_key, similar_unconfirmed
 from app.config import settings
 from app.db import get_session
-from app.ledger import compute_shares, my_share_expr, others_share_subquery, person_balances
-from app.models import Account, Category, GmailState, Person, RawEmail, Split, Transaction
+from app.ledger import compute_shares, my_share_expr, others_share_subquery, person_balances, recovered_on
+from app.models import Account, Category, GmailState, Person, RawEmail, SettlementLink, Split, Transaction
 from app.people import resolve_person
+from app.settle import clear_settlement
 from app.schemas import (
     RawEmailOut,
     SharedTotals,
@@ -43,7 +44,23 @@ def health(session: Session = Depends(get_session)) -> dict:
     return {"ok": True}
 
 
-WITH_SPLITS = selectinload(Transaction.splits).selectinload(Split.person)
+# Everything TransactionOut shows: shares with their repayments, and a repayment's person and shares.
+TXN_LOAD = (
+    selectinload(Transaction.account),
+    selectinload(Transaction.splits).selectinload(Split.person),
+    selectinload(Transaction.splits).selectinload(Split.links).selectinload(SettlementLink.settlement),
+    selectinload(Transaction.person),
+    selectinload(Transaction.links_out)
+    .selectinload(SettlementLink.split)
+    .options(selectinload(Split.transaction), selectinload(Split.links).selectinload(SettlementLink.settlement)),
+)
+
+
+def load_txn(session: Session, txn_id: int) -> Transaction:
+    """Fresh copy with everything TransactionOut needs (after a write)."""
+    return session.scalars(
+        select(Transaction).where(Transaction.id == txn_id).options(*TXN_LOAD).execution_options(populate_existing=True)
+    ).one()
 
 
 @router.get("/transactions", response_model=list[TransactionOut])
@@ -56,7 +73,7 @@ def list_transactions(
     stmt = (
         select(Transaction)
         .join(Transaction.account)
-        .options(contains_eager(Transaction.account), WITH_SPLITS)
+        .options(contains_eager(Transaction.account), *TXN_LOAD[1:])
         .where(Transaction.ts >= start, Transaction.ts < end)
         .order_by(Transaction.ts.desc(), Transaction.id.desc())
     )
@@ -97,8 +114,12 @@ def summary(month: Month, session: Session = Depends(get_session)):
         for r in rows
     }
     balances = person_balances(session).values()
+    month_expenses = select(Transaction.id).where(
+        Transaction.ts >= start, Transaction.ts < end, Transaction.kind == "expense", Transaction.direction == "debit"
+    )
     shared = SharedTotals(
         others_share=sum((r[8] for r in rows), zero),
+        recovered=recovered_on(session, month_expenses),
         owed_to_me=sum((b.net for b in balances if b.net > 0), zero),
         i_owe=sum((-b.net for b in balances if b.net < 0), zero),
         people_owing=sum(1 for b in balances if b.net > 0),
@@ -140,6 +161,12 @@ def _get_txn(session: Session, txn_id: int) -> Transaction:
     return t
 
 
+@router.get("/transactions/{txn_id}", response_model=TransactionOut)
+def get_transaction(txn_id: int, session: Session = Depends(get_session)):
+    _get_txn(session, txn_id)
+    return load_txn(session, txn_id)
+
+
 @router.get("/transactions/{txn_id}/similar", response_model=SimilarOut)
 def similar(txn_id: int, session: Session = Depends(get_session)):
     t = _get_txn(session, txn_id)
@@ -171,6 +198,8 @@ def patch_transaction(txn_id: int, body: TransactionPatch, session: Session = De
         )
 
     tagged = bool(sent & {"kind", "category_id"})
+    if "kind" in sent and t.kind == "settlement" and body.kind != "settlement":
+        clear_settlement(session, t)
     if "kind" in sent:
         t.kind = body.kind
     if "category_id" in sent:
@@ -237,15 +266,19 @@ def put_splits(txn_id: int, body: SplitRequest, session: Session = Depends(get_s
     current = {s.person_id: s for s in t.splits if s.paid_by == "me"}
     for pid, share in zip(person_ids, shares, strict=True):
         if pid in current:
-            current.pop(pid).share_amount = share
+            kept = current.pop(pid)
+            kept.share_amount, kept.origin = share, "manual"
         else:
             t.splits.append(Split(person_id=pid, share_amount=share, paid_by="me"))
     for gone in current.values():
+        if gone.links:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{gone.person.display_name} has repayments tagged to this payment; remove those first",
+            )
         t.splits.remove(gone)
     if body.people:
         t.confirmed = True
 
     session.commit()
-    return session.scalars(
-        select(Transaction).where(Transaction.id == t.id).options(WITH_SPLITS).execution_options(populate_existing=True)
-    ).one()
+    return load_txn(session, t.id)

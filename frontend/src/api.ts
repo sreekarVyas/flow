@@ -26,6 +26,51 @@ export interface Transaction {
   account: Account;
   splits: Split[];
   my_share: string; // amount minus other people's shares
+  person: PersonRef | null; // settlements: who it is from / to
+  links_out: LinkToShare[]; // settlements: the shares it pays
+  unapplied: string; // settlements: part not tagged to any payment
+}
+
+export interface TxnBrief {
+  id: number;
+  ts: string;
+  amount: string;
+  direction: "debit" | "credit";
+  counterparty_name: string | null;
+  vpa_or_merchant: string | null;
+}
+
+export interface LinkToShare {
+  id: number;
+  amount: string;
+  settles: boolean;
+  split: { id: number; share_amount: string; outstanding: string; transaction: TxnBrief };
+}
+
+export interface LinkFromSettlement {
+  id: number;
+  amount: string;
+  settles: boolean; // false = money returned to them
+  settlement: TxnBrief;
+}
+
+export interface SettleCandidate {
+  transaction: Transaction;
+  share: { id: number; share_amount: string; outstanding: string } | null;
+  linked_amount: string;
+}
+
+export interface Source {
+  printed_name: string | null;
+  vpa: string | null;
+  person: PersonRef | null; // the nickname, known or guessed
+  known: boolean; // this exact name + UPI ID already has this nickname
+  suggestion: string;
+}
+
+export interface SettlementRequest {
+  nickname: string;
+  links: { transaction_id: number; amount: string; share?: string }[];
 }
 
 export interface PersonRef {
@@ -38,6 +83,10 @@ export interface Split {
   person: PersonRef;
   share_amount: string;
   paid_by: "me" | "person";
+  origin: "manual" | "link";
+  settled: string;
+  outstanding: string; // negative = overpaid
+  links: LinkFromSettlement[];
 }
 
 export type SplitMode = "equal" | "exact" | "percent";
@@ -61,7 +110,16 @@ export interface Person {
 
 export interface PersonDetail extends Person {
   match_names: string[];
-  history: { split_id: number; share_amount: string; paid_by: "me" | "person"; transaction: Transaction }[];
+  history: {
+    split_id: number;
+    share_amount: string;
+    settled: string;
+    outstanding: string;
+    paid_by: "me" | "person";
+    transaction: Transaction;
+  }[];
+  repayments: Transaction[];
+  sources: { id: number; printed_name: string | null; vpa: string }[];
 }
 
 export interface Category {
@@ -137,6 +195,7 @@ export interface TypeTotals {
 
 export interface SharedTotals {
   others_share: string;
+  recovered: string;
   owed_to_me: string;
   i_owe: string;
   people_owing: number;
@@ -222,6 +281,30 @@ export const api = {
   createPerson: (name: string) => request<Person>("/api/people", json("POST", { name })),
   renamePerson: (id: number, display_name: string) => request<Person>(`/api/people/${id}`, json("PATCH", { display_name })),
   deletePerson: (id: number) => request<void>(`/api/people/${id}`, { method: "DELETE" }),
+  mergePeople: (id: number, intoId: number) => request<Person>(`/api/people/${id}/merge`, json("POST", { into_id: intoId })),
+  forgetSource: (id: number) => request<void>(`/api/payment-sources/${id}`, { method: "DELETE" }),
+
+  transaction: (id: number) => request<Transaction>(`/api/transactions/${id}`),
+  putSettlement: (id: number, body: SettlementRequest) =>
+    request<Transaction>(`/api/transactions/${id}/settlement`, json("PUT", body)),
+  source: (id: number) => request<Source>(`/api/transactions/${id}/source`),
+  settleCandidates: (id: number, nickname?: string, q?: string) => {
+    const p = new URLSearchParams();
+    if (nickname) p.set("nickname", nickname);
+    if (q) p.set("q", q);
+    return request<{ suggested_person: PersonRef | null; items: SettleCandidate[] }>(
+      `/api/transactions/${id}/settle-candidates?${p}`,
+    );
+  },
+  repaymentCandidates: (id: number, q?: string) =>
+    request<{ items: { transaction: Transaction; linked_amount: string }[] }>(
+      `/api/transactions/${id}/repayment-candidates${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+    ),
+  addRepayment: (
+    expenseId: number,
+    body: { settlement_txn_id: number; amount: string; nickname: string; share?: string },
+  ) => request<Transaction>(`/api/transactions/${expenseId}/repayments`, json("POST", body)),
+  deleteLink: (id: number) => request<void>(`/api/settlement-links/${id}`, { method: "DELETE" }),
 
   rules: () => request<Rule[]>("/api/rules"),
   deleteRule: (id: number) => request<void>(`/api/rules/${id}`, { method: "DELETE" }),

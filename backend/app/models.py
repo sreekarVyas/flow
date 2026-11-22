@@ -23,6 +23,7 @@ PARSE_STATUSES = ("txn", "ignored", "unknown")
 MATCH_FIELDS = ("payee", "name_contains", "vpa_contains")
 RULE_SOURCES = ("seed", "learned")
 PAID_BY = ("me", "person")
+SPLIT_ORIGINS = ("manual", "link")
 
 
 def _in(col: str, values: tuple[str, ...]) -> str:
@@ -154,9 +155,27 @@ class Transaction(Base):
 
     account: Mapped[Account] = relationship()
     raw_email: Mapped[RawEmail | None] = relationship(back_populates="transaction")
+    # Settlements only: who the repayment is from (credit) or to (debit).
+    person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id"), index=True)
+
     splits: Mapped[list["Split"]] = relationship(
         back_populates="transaction", cascade="all, delete-orphan", passive_deletes=True, order_by="Split.id"
     )
+    person: Mapped["Person | None"] = relationship()
+    # Settlements only: the shares this repayment is applied to.
+    links_out: Mapped[list["SettlementLink"]] = relationship(
+        back_populates="settlement", cascade="all, delete-orphan", passive_deletes=True,
+        order_by="SettlementLink.id",
+    )
+
+    @property
+    def applied(self) -> Decimal:
+        return sum((link.amount for link in self.links_out), Decimal("0"))
+
+    @property
+    def unapplied(self) -> Decimal:
+        """Settlements only: the part of the repayment not linked to any share yet."""
+        return self.amount - self.applied if self.kind == "settlement" else Decimal("0")
 
     @property
     def my_share(self) -> Decimal:
@@ -178,6 +197,25 @@ class Person(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PaymentSource(Base):
+    """One payment source as the bank prints it (name + UPI ID), nicknamed as a person."""
+
+    __tablename__ = "payment_sources"
+    __table_args__ = (
+        UniqueConstraint("name_key", "vpa", name="uq_payment_sources_name_vpa"),
+        CheckConstraint("name_key <> '' OR vpa <> ''", name="ck_payment_sources_not_empty"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name_key: Mapped[str] = mapped_column(String(255), index=True)
+    vpa: Mapped[str] = mapped_column(String(255))
+    printed_name: Mapped[str | None] = mapped_column(String(255))
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    person: Mapped[Person] = relationship()
+
+
 class Split(Base):
     """paid_by = me: the person owes me share_amount. paid_by = person: I owe them."""
 
@@ -186,6 +224,7 @@ class Split(Base):
         UniqueConstraint("transaction_id", "person_id", name="uq_splits_transaction_person"),
         CheckConstraint("share_amount > 0", name="ck_splits_share_positive"),
         CheckConstraint(_in("paid_by", PAID_BY), name="ck_splits_paid_by"),
+        CheckConstraint(_in("origin", SPLIT_ORIGINS), name="ck_splits_origin"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -193,10 +232,56 @@ class Split(Base):
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id"), index=True)
     share_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     paid_by: Mapped[str] = mapped_column(String(6), server_default="me", default="me")
+    origin: Mapped[str] = mapped_column(String(6), server_default="manual", default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     transaction: Mapped[Transaction] = relationship(back_populates="splits")
     person: Mapped[Person] = relationship()
+    links: Mapped[list["SettlementLink"]] = relationship(
+        back_populates="split", cascade="all, delete-orphan", passive_deletes=True, order_by="SettlementLink.id"
+    )
+
+    @property
+    def settled(self) -> Decimal:
+        """Net repaid on this share. Can exceed the share (an overpayment not yet returned)."""
+        return sum((link.signed for link in self.links), Decimal("0"))
+
+    @property
+    def outstanding(self) -> Decimal:
+        """Still owed on this share. Negative = overpaid (money to return)."""
+        return self.share_amount - self.settled
+
+
+class SettlementLink(Base):
+    """`amount` of a settlement transaction applied to one share.
+
+    The direction of the settlement decides the effect. On a share the person owes me (paid_by = me),
+    their credit settles it and my debit to them (returning an overpayment) re-opens it.
+    """
+
+    __tablename__ = "settlement_links"
+    __table_args__ = (
+        UniqueConstraint("settlement_txn_id", "split_id", name="uq_settlement_links_txn_split"),
+        CheckConstraint("amount > 0", name="ck_settlement_links_amount_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    settlement_txn_id: Mapped[int] = mapped_column(ForeignKey("transactions.id", ondelete="CASCADE"), index=True)
+    split_id: Mapped[int] = mapped_column(ForeignKey("splits.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    settlement: Mapped[Transaction] = relationship(back_populates="links_out")
+    split: Mapped[Split] = relationship(back_populates="links")
+
+    @property
+    def settles(self) -> bool:
+        """True when this link reduces what is owed on the share."""
+        return (self.split.paid_by == "me") == (self.settlement.direction == "credit")
+
+    @property
+    def signed(self) -> Decimal:
+        return self.amount if self.settles else -self.amount
 
 
 class GmailState(Base):

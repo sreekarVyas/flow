@@ -57,7 +57,15 @@ const MODES: { value: SplitMode; label: string }[] = [
 const fieldClass =
   "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-base placeholder:text-ink-muted focus:border-stamp focus:outline-none";
 
-function PersonPicker({ exclude, onPick }: { exclude: Set<string>; onPick: (p: { id?: number; name: string }) => void }) {
+export function PersonPicker({
+  exclude,
+  onPick,
+  label = "Add by nickname",
+}: {
+  exclude: Set<string>;
+  onPick: (p: { id?: number; name: string }) => void;
+  label?: string;
+}) {
   const [q, setQ] = useState("");
   const listId = useId();
   const typed = q.trim().replace(/\s+/g, " ");
@@ -90,8 +98,8 @@ function PersonPicker({ exclude, onPick }: { exclude: Set<string>; onPick: (p: {
             pick(options[0]);
           }
         }}
-        placeholder="Add a person"
-        aria-label="Add a person to the split"
+        placeholder={label}
+        aria-label={label === "Add by nickname" ? "Add a person to the split" : label}
         aria-controls={listId}
         aria-expanded={options.length > 0}
         autoComplete="off"
@@ -231,7 +239,7 @@ export function SplitEditor({ amount, draft, onChange }: { amount: string; draft
           </p>
         )
       ) : (
-        <p className="text-sm text-ink-muted">Paid for friends too? Add them. Their shares are not counted as your spending.</p>
+        <p className="text-sm text-ink-muted">Paid for friends too? Add them by nickname. Their shares are not counted as your spending.</p>
       )}
     </section>
   );

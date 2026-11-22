@@ -28,3 +28,9 @@ export const relative = (ts: string) => {
   const hrs = Math.round(mins / 60);
   return hrs < 24 ? `${hrs} h ago` : new Date(ts).toLocaleString("en-IN", { timeZone: TZ });
 };
+
+export const payeeOf = (t: { counterparty_name: string | null; vpa_or_merchant: string | null }) =>
+  t.counterparty_name || t.vpa_or_merchant || "Unknown payee";
+
+export const shortDate = (ts: string) =>
+  new Date(ts).toLocaleDateString("en-IN", { timeZone: TZ, day: "numeric", month: "short" });

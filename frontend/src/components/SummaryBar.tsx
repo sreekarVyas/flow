@@ -37,7 +37,9 @@ export function SummaryBar({ summary, onPeople }: { summary: Summary; onPeople: 
           <span className={`mt-0.5 block text-lg font-semibold ${owed > 0 ? "text-in" : ""}`}>{money(owed)}</span>
           <span className="block text-xs text-ink-muted">
             {shared.people_owing > 0
-              ? `by ${shared.people_owing} ${shared.people_owing === 1 ? "person" : "people"}`
+              ? `by ${shared.people_owing} ${shared.people_owing === 1 ? "person" : "people"}${
+                  Number(shared.recovered) > 0 ? `, ${money(shared.recovered)} back` : ""
+                }`
               : Number(shared.i_owe) > 0
                 ? `you owe ${money(shared.i_owe)}`
                 : "Nobody owes you"}

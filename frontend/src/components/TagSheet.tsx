@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Category, type Kind, type Transaction } from "../api";
 import { hasCategory, KIND_LABEL, pushRecent, readRecent, useCategories } from "../categories";
 import { dayLabel, dayKey, money, timeLabel } from "../format";
+import { RepaymentsSection } from "./RepaymentsSection";
+import { draftFromSettlement, settleProblem, settleRequest, SettlementEditor, type SettleDraft } from "./SettlementEditor";
 import { draftFromTxn, draftRequest, draftShares, SplitEditor, type SplitDraft } from "./SplitEditor";
 
 const KINDS: Kind[] = ["expense", "transfer", "settlement", "income", "refund"];
@@ -52,7 +54,9 @@ export function TagSheet({
   const [search, setSearch] = useState("");
   const [applySimilar, setApplySimilar] = useState(true);
   const [note, setNote] = useState(txn.notes ?? "");
+  const [live, setLive] = useState<Transaction>(txn); // refreshed after repayments are tagged here
   const [split, setSplit] = useState<SplitDraft>(() => draftFromTxn(txn));
+  const [settle, setSettle] = useState<SettleDraft>(() => draftFromSettlement(txn));
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const similar = useQuery({ queryKey: ["similar", txn.id], queryFn: () => api.similar(txn.id) });
@@ -63,15 +67,22 @@ export function TagSheet({
   const canSplit = kind === "expense" && txn.direction === "debit";
   const splitDirty = canSplit && split.dirty;
   const splitPreview = draftShares(txn.amount, split);
-  const noteOnly = noteChanged && !tagChanged && !splitDirty;
+  const isSettle = kind === "settlement";
+  // Saving a repayment always sends its person and links (it may be newly marked, or a suggestion).
+  const settleSave = isSettle && (settle.dirty || txn.kind !== "settlement" || (!txn.person && !!settle.nickname.trim()));
+  const noteOnly = noteChanged && !tagChanged && !splitDirty && !settleSave;
   const splitOnly = splitDirty && !tagChanged && !noteChanged; // no PATCH: no rule, no similar
+  const noPatchExtras = splitOnly || isSettle; // no rule learning, no "apply to similar"
 
   const save = useMutation({
     mutationFn: async () => {
       // A split expense must lose its split before its kind can change.
-      if (!canSplit && txn.splits.length) await api.putSplits(txn.id, { mode: "equal", include_me: true, people: [] });
+      if (!canSplit && live.splits.length) await api.putSplits(txn.id, { mode: "equal", include_me: true, people: [] });
       let updatedSimilar = 0;
-      if (noteOnly) {
+      if (settleSave) {
+        if (noteChanged) await api.patchTransaction(txn.id, { notes: note.trim() || null });
+        await api.putSettlement(txn.id, settleRequest(settle));
+      } else if (noteOnly) {
         await api.patchTransaction(txn.id, { notes: note.trim() || null });
       } else if (tagChanged || noteChanged || !splitDirty) {
         const r = await api.patchTransaction(txn.id, {
@@ -142,7 +153,8 @@ export function TagSheet({
   const sim = similar.data;
   const selected = categoryId != null ? byId.get(categoryId) : undefined;
   const splitBlocked = splitDirty && split.people.length > 0 && splitPreview.error != null;
-  const canSave = kind != null && !save.isPending && !splitBlocked;
+  const settleBlocked = isSettle && settleProblem(live, settle) != null;
+  const canSave = kind != null && !save.isPending && !splitBlocked && !settleBlocked;
 
   const chip = (id: number) => {
     const info = byId.get(id);
@@ -226,9 +238,26 @@ export function TagSheet({
           </div>
 
           {canSplit && <SplitEditor amount={txn.amount} draft={split} onChange={setSplit} />}
-          {!canSplit && txn.splits.length > 0 && (
+          {canSplit && (
+            <RepaymentsSection
+              expense={live}
+              onUpdated={(t) => {
+                setLive(t);
+                setSplit(draftFromTxn(t));
+              }}
+            />
+          )}
+          {isSettle && <SettlementEditor txn={live} draft={settle} onChange={setSettle} />}
+          {!canSplit && live.splits.length > 0 && (
             <p className="rounded-lg bg-warn-soft px-3 py-2 text-sm text-warn">
-              Saving removes the split with {txn.splits.map((s) => s.person.display_name).join(", ")}.
+              Saving removes the split with {live.splits.map((s) => s.person.display_name).join(", ")}
+              {live.splits.some((s) => s.links.length) ? ". Remove its repayments first." : "."}
+            </p>
+          )}
+          {txn.kind === "settlement" && !isSettle && txn.links_out.length > 0 && (
+            <p className="rounded-lg bg-warn-soft px-3 py-2 text-sm text-warn">
+              Saving removes this repayment's tags to {txn.links_out.length}{" "}
+              {txn.links_out.length === 1 ? "payment" : "payments"}.
             </p>
           )}
 
@@ -293,7 +322,7 @@ export function TagSheet({
         </div>
 
         <footer className="space-y-3 border-t border-line bg-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-          {!noteOnly && !splitOnly && sim && sim.count > 0 && (
+          {!noteOnly && !noPatchExtras && sim && sim.count > 0 && (
             <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">
               <span>
                 Also tag {sim.count} other {sim.count === 1 ? "payment" : "payments"} {debit ? "to" : "from"}{" "}
@@ -312,7 +341,7 @@ export function TagSheet({
               />
             </label>
           )}
-          {!noteOnly && !splitOnly && sim?.learns_rule && kind && (
+          {!noteOnly && !noPatchExtras && sim?.learns_rule && kind && (
             <p className="text-xs text-ink-muted">
               {needsCategory && selected
                 ? `Future payments to ${sim.payee} get ${selected.icon} ${selected.label}.`
@@ -321,6 +350,7 @@ export function TagSheet({
                   : `Future payments to ${sim.payee} are marked ${KIND_LABEL[kind].toLowerCase()}.`}
             </p>
           )}
+          {settleBlocked && <p className="text-sm text-warn">{settleProblem(live, settle)}</p>}
           {save.error && <p className="text-sm text-out">Could not save: {save.error.message}</p>}
           <button
             type="button"

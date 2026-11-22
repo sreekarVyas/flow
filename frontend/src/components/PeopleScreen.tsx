@@ -7,6 +7,15 @@ const fieldClass =
   "rounded-lg border border-line bg-surface px-2.5 py-1.5 text-base placeholder:text-ink-muted focus:border-stamp focus:outline-none";
 const linkClass = "text-sm font-medium text-stamp hover:underline disabled:opacity-50";
 
+function shareStatus(outstanding: string) {
+  const n = Number(outstanding);
+  if (n === 0) return "settled";
+  return n > 0 ? `${money(n)} owed` : `${money(-n)} overpaid`;
+}
+
+const shareTone = (outstanding: string) =>
+  Number(outstanding) === 0 ? "text-in" : Number(outstanding) < 0 ? "text-warn" : "text-ink-muted";
+
 function BalanceText({ net, big }: { net: string; big?: boolean }) {
   const n = Number(net);
   const size = big ? "text-2xl" : "text-base";
@@ -53,7 +62,17 @@ function AddPerson() {
   );
 }
 
-function PersonPage({ id, onBack, onOpenTxn }: { id: number; onBack: () => void; onOpenTxn: (t: Transaction) => void }) {
+function PersonPage({
+  id,
+  onBack,
+  onOpenTxn,
+  onOpen,
+}: {
+  id: number;
+  onBack: () => void;
+  onOpenTxn: (t: Transaction) => void;
+  onOpen: (id: number) => void;
+}) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["person", id], queryFn: () => api.person(id) });
   const [renaming, setRenaming] = useState(false);
@@ -63,13 +82,28 @@ function PersonPage({ id, onBack, onOpenTxn }: { id: number; onBack: () => void;
     qc.invalidateQueries({ queryKey: ["person", id] });
     qc.invalidateQueries({ queryKey: ["transactions"] });
   };
+  const [mergeInto, setMergeInto] = useState<Person | null>(null);
   const rename = useMutation({
     mutationFn: () => api.renamePerson(id, name),
     onSuccess: () => {
       invalidate();
       setRenaming(false);
     },
+    // The nickname is taken: that is the same person under another nickname. Offer to merge.
+    onError: async () => {
+      const key = name.trim().replace(/\s+/g, " ").toLowerCase();
+      const found = (await api.people(name.trim())).find((x) => x.display_name.toLowerCase() === key && x.id !== id);
+      setMergeInto(found ?? null);
+    },
   });
+  const merge = useMutation({
+    mutationFn: (into: Person) => api.mergePeople(id, into.id),
+    onSuccess: (merged) => {
+      qc.invalidateQueries();
+      onOpen(merged.id);
+    },
+  });
+  const forget = useMutation({ mutationFn: api.forgetSource, onSuccess: invalidate });
   const del = useMutation({
     mutationFn: () => api.deletePerson(id),
     onSuccess: () => {
@@ -105,7 +139,25 @@ function PersonPage({ id, onBack, onOpenTxn }: { id: number; onBack: () => void;
                   <button type="button" className="text-sm text-ink-muted hover:underline" onClick={() => setRenaming(false)}>
                     Cancel
                   </button>
-                  {rename.error && <p className="w-full text-sm text-out">{rename.error.message}</p>}
+                  {mergeInto ? (
+                    <div className="w-full space-y-2 rounded-lg bg-warn-soft px-3 py-2 text-sm">
+                      <p>
+                        {mergeInto.display_name} already exists. If they are the same person, merge {p.display_name} into{" "}
+                        {mergeInto.display_name}: shares, repayments and UPI IDs move over.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => merge.mutate(mergeInto)}
+                        disabled={merge.isPending}
+                        className="rounded-lg bg-ink px-3 py-1.5 font-medium text-paper disabled:opacity-50"
+                      >
+                        Merge into {mergeInto.display_name}
+                      </button>
+                      {merge.error && <p className="text-out">{merge.error.message}</p>}
+                    </div>
+                  ) : (
+                    rename.error && <p className="w-full text-sm text-out">{rename.error.message}</p>
+                  )}
                 </form>
               ) : (
                 <>
@@ -115,6 +167,7 @@ function PersonPage({ id, onBack, onOpenTxn }: { id: number; onBack: () => void;
                     className={linkClass}
                     onClick={() => {
                       setName(p.display_name);
+                      setMergeInto(null);
                       setRenaming(true);
                     }}
                   >
@@ -149,7 +202,7 @@ function PersonPage({ id, onBack, onOpenTxn }: { id: number; onBack: () => void;
                         </span>
                         <span className="shrink-0 text-right">
                           <span className="block font-semibold">{money(h.share_amount)}</span>
-                          <span className="block text-xs text-ink-muted">{h.paid_by === "me" ? "their share" : "your share"}</span>
+                          <span className={`block text-xs ${shareTone(h.outstanding)}`}>{shareStatus(h.outstanding)}</span>
                         </span>
                       </button>
                     </li>
@@ -166,6 +219,69 @@ function PersonPage({ id, onBack, onOpenTxn }: { id: number; onBack: () => void;
               </div>
             )}
           </section>
+
+          {p.sources.length > 0 && (
+            <section aria-labelledby="sources-heading" className="rounded-xl border border-line bg-surface">
+              <h2 id="sources-heading" className="border-b border-line px-4 py-2.5 font-semibold">
+                UPI IDs nicknamed {p.display_name}
+              </h2>
+              <ul className="divide-y divide-line">
+                {p.sources.map((src) => (
+                  <li key={src.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium">{src.printed_name ?? "No name"}</span>
+                      {src.vpa && <span className="block truncate text-xs text-ink-muted">{src.vpa}</span>}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => forget.mutate(src.id)}
+                      disabled={forget.isPending}
+                      className="shrink-0 font-medium text-stamp hover:underline"
+                    >
+                      Forget
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          <section aria-labelledby="repays-heading" className="rounded-xl border border-line bg-surface">
+            <h2 id="repays-heading" className="border-b border-line px-4 py-2.5 font-semibold">
+              Repayments
+            </h2>
+            {p.repayments.length ? (
+              <ul className="divide-y divide-line">
+                {p.repayments.map((t) => (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenTxn(t)}
+                      className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left hover:bg-surface-2/60"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{t.counterparty_name || t.vpa_or_merchant || "Unknown payee"}</span>
+                        <span className="block text-xs text-ink-muted">
+                          {dayLabel(dayKey(t.ts))}
+                          {Number(t.unapplied) > 0
+                            ? `, ${money(t.unapplied)} not tagged to a payment`
+                            : `, tagged to ${t.links_out.length} ${t.links_out.length === 1 ? "payment" : "payments"}`}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 font-semibold ${t.direction === "credit" ? "text-in" : "text-out"}`}>
+                        {t.direction === "credit" ? "+" : "−"}
+                        {money(t.amount)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="px-4 py-3 text-sm text-ink-muted">
+                None yet. Open money you received, choose Settlement, give the sender the nickname {p.display_name}, and tag the payments it covers.
+              </p>
+            )}
+          </section>
         </>
       )}
     </div>
@@ -176,7 +292,8 @@ export function PeopleScreen({ onBack, onOpenTxn }: { onBack: () => void; onOpen
   const [openId, setOpenId] = useState<number | null>(null);
   const q = useQuery({ queryKey: ["people", ""], queryFn: () => api.people() });
 
-  if (openId != null) return <PersonPage id={openId} onBack={() => setOpenId(null)} onOpenTxn={onOpenTxn} />;
+  if (openId != null)
+    return <PersonPage key={openId} id={openId} onBack={() => setOpenId(null)} onOpenTxn={onOpenTxn} onOpen={setOpenId} />;
 
   const people: Person[] = q.data ?? [];
   const owedToMe = people.reduce((s, p) => s + Math.max(0, Number(p.net)), 0);
