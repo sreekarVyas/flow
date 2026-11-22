@@ -18,10 +18,10 @@ export function AccountFilter({ value, onChange }: { value: Filter; onChange: (f
           aria-checked={value === o.value}
           onClick={() => onChange(o.value)}
           className={
-            "rounded-full px-3 py-1 text-sm font-medium ring-1 transition " +
+            "rounded-full border px-3 py-1 text-sm font-medium transition-colors " +
             (value === o.value
-              ? "bg-slate-900 text-white ring-slate-900 dark:bg-slate-100 dark:text-slate-900 dark:ring-slate-100"
-              : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-100 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700 dark:hover:bg-slate-800")
+              ? "border-ink bg-ink text-paper"
+              : "border-line bg-surface text-ink hover:bg-surface-2")
           }
         >
           {o.label}

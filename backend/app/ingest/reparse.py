@@ -10,6 +10,7 @@ from collections import Counter
 from sqlalchemy import select
 
 from app.config import settings
+from app.categorize.rules import load_rules
 from app.ingest.store import apply_classification
 from app.models import RawEmail
 
@@ -25,11 +26,12 @@ def main() -> None:
         stmt = select(RawEmail).where(RawEmail.parser_name.is_distinct_from("sender_not_allowed"))
         if args.status != "all":
             stmt = stmt.where(RawEmail.parse_status == args.status)
+        rules = load_rules(s)
         before: Counter[str] = Counter()
         after: Counter[str] = Counter()
         for raw in s.scalars(stmt).all():
             before[raw.parse_status] += 1
-            after[apply_classification(s, raw, settings.tz)] += 1
+            after[apply_classification(s, raw, settings.tz, rules)] += 1
         s.commit()
     print(f"before: {dict(before)}\nafter:  {dict(after)}")
 

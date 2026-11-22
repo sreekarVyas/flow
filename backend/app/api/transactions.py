@@ -2,14 +2,23 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, contains_eager
 
+from app.categorize.rules import CATEGORIZABLE_KINDS, learn_rule, payee_key, similar_unconfirmed
 from app.config import settings
 from app.db import get_session
-from app.models import Account, GmailState, RawEmail, Transaction
-from app.schemas import RawEmailOut, SummaryOut, TransactionOut, TypeTotals
+from app.models import Account, Category, GmailState, RawEmail, Transaction
+from app.schemas import (
+    RawEmailOut,
+    SimilarOut,
+    SummaryOut,
+    TransactionOut,
+    TransactionPatch,
+    TransactionPatchOut,
+    TypeTotals,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -102,3 +111,62 @@ def list_raw_emails(
         start, end = month_bounds(month)
         stmt = stmt.where(RawEmail.received_at >= start, RawEmail.received_at < end)
     return session.scalars(stmt.limit(500)).all()
+
+
+def _get_txn(session: Session, txn_id: int) -> Transaction:
+    t = session.get(Transaction, txn_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    return t
+
+
+@router.get("/transactions/{txn_id}/similar", response_model=SimilarOut)
+def similar(txn_id: int, session: Session = Depends(get_session)):
+    t = _get_txn(session, txn_id)
+    payee = payee_key(t.counterparty_name, t.vpa_or_merchant)
+    return SimilarOut(
+        payee=payee,
+        count=len(similar_unconfirmed(session, t)),
+        learns_rule=payee is not None and t.direction == "debit",
+    )
+
+
+@router.patch("/transactions/{txn_id}", response_model=TransactionPatchOut)
+def patch_transaction(txn_id: int, body: TransactionPatch, session: Session = Depends(get_session)):
+    """Tag by hand. Sets `confirmed`, learns a payee rule (debits), and can tag similar ones."""
+    t = _get_txn(session, txn_id)
+    sent = body.model_fields_set
+
+    if "category_id" in sent and body.category_id is not None and body.category_id != t.category_id:
+        cat = session.get(Category, body.category_id)
+        if cat is None or cat.archived:
+            raise HTTPException(status_code=422, detail="unknown or hidden category")
+
+    tagged = bool(sent & {"kind", "category_id"})
+    if "kind" in sent:
+        t.kind = body.kind
+    if "category_id" in sent:
+        t.category_id = body.category_id
+    if "notes" in sent:
+        t.notes = body.notes or None
+    if t.kind not in CATEGORIZABLE_KINDS:
+        t.category_id = None
+    if t.category_id is None:
+        t.category_source = None
+    elif tagged:
+        t.category_source = "manual"
+    t.confirmed = True
+
+    rule = learn_rule(session, t) if tagged else None
+
+    updated = 0
+    if body.apply_to_similar:
+        for o in similar_unconfirmed(session, t):
+            o.kind = t.kind
+            o.category_id = t.category_id
+            o.category_source = "manual" if t.category_id is not None else None
+            o.confirmed = True
+            updated += 1
+
+    session.commit()
+    return TransactionPatchOut(transaction=t, updated_similar=updated, rule=rule)

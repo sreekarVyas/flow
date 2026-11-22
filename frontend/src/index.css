@@ -1,5 +1,90 @@
 @import "tailwindcss";
+@import "@fontsource-variable/figtree";
+
+/*
+  Passbook palette. A rule's guess is a pencil note (dashed, grey);
+  a tag Siri confirmed is a stamp (solid violet). Keep that contrast for tags only.
+*/
+:root {
+  --paper: #eef2f6;
+  --surface: #ffffff;
+  --surface-2: #e3e9f0;
+  --line: #d5dde7;
+  --ink: #1b2a41;
+  --ink-muted: #5b6b80;
+  --pencil: #8a94a6;
+  --stamp: #5b3fd1;
+  --stamp-soft: #ece8fd;
+  --on-stamp: #ffffff;
+  --out: #b4233c;
+  --in: #1e7a4c;
+  --warn: #9a5b00;
+  --warn-soft: #fdf1dc;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e1522;
+    --surface: #162034;
+    --surface-2: #1e2a41;
+    --line: #26344d;
+    --ink: #e6ecf5;
+    --ink-muted: #93a2b8;
+    --pencil: #6f7e96;
+    --stamp: #a495ff;
+    --stamp-soft: #2a2550;
+    --on-stamp: #120e2b;
+    --out: #f27b8c;
+    --in: #5bd39a;
+    --warn: #f0b45a;
+    --warn-soft: #3a2a10;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --font-sans: "Figtree Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-pencil: var(--pencil);
+  --color-stamp: var(--stamp);
+  --color-stamp-soft: var(--stamp-soft);
+  --color-on-stamp: var(--on-stamp);
+  --color-out: var(--out);
+  --color-in: var(--in);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+}
 
 body {
-  @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+  @apply bg-paper font-sans text-ink antialiased;
+  font-feature-settings: "tnum" 1;
+}
+
+:focus-visible {
+  outline: 2px solid var(--stamp);
+  outline-offset: 2px;
+}
+
+/* The one orchestrated motion: a pencil note gets stamped. */
+@keyframes stamp-in {
+  0% { transform: scale(1.25) rotate(-6deg); opacity: 0; }
+  60% { transform: scale(0.95) rotate(1deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); }
+}
+.animate-stamp { animation: stamp-in 260ms cubic-bezier(.2,.9,.3,1.2); }
+
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.animate-sheet { animation: sheet-up 220ms cubic-bezier(.2,.8,.2,1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-stamp, .animate-sheet { animation: none; }
 }

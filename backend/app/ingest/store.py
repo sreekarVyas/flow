@@ -1,14 +1,16 @@
 """Turn a stored raw email into (at most) one transaction. Used by poll and reparse."""
 
+from collections.abc import Sequence
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Account, RawEmail, Transaction
-from app.parsers import classify_email
+from app.categorize.rules import auto_categorize, load_rules
 from app.config import settings
+from app.models import Account, RawEmail, Rule, Transaction
+from app.parsers import classify_email
 from app.parsers.base import EmailInput, ParsedTxn, infer_kind
 
 
@@ -46,8 +48,14 @@ def resolve_ts(p: ParsedTxn, received_at: datetime, tz: ZoneInfo) -> datetime:
     return datetime.combine(p.txn_date, time(0), tz)
 
 
-def apply_classification(session: Session, raw: RawEmail, tz: ZoneInfo) -> str:
-    """Classify `raw`, and create, update or remove its transaction. Returns the status."""
+def apply_classification(
+    session: Session, raw: RawEmail, tz: ZoneInfo, rules: Sequence[Rule] | None = None
+) -> str:
+    """Classify `raw`, and create, update or remove its transaction. Returns the status.
+
+    New and unconfirmed transactions get a category from the rules. Pass `rules` when
+    you classify many emails, so they load once.
+    """
     result = classify_email(EmailInput(raw.sender, raw.subject or "", raw.body_text or "", raw.received_at))
     raw.parse_status = result.status
     raw.parser_name = result.parser_name
@@ -70,11 +78,15 @@ def apply_classification(session: Session, raw: RawEmail, tz: ZoneInfo) -> str:
             parse_confidence=p.confidence,
         )
         if existing is None:
-            session.add(Transaction(raw_email_id=raw.id, confirmed=False, **fields))
+            existing = Transaction(raw_email_id=raw.id, confirmed=False, **fields)
+            session.add(existing)
         else:
-            # Keep manual fields (category, confirmed, notes). Refresh parsed fields.
+            # Refresh parsed fields. Keep what Siri set by hand (kind, category, notes) once confirmed.
+            if existing.confirmed:
+                del fields["kind"]
             for k, v in fields.items():
                 setattr(existing, k, v)
+        auto_categorize(existing, load_rules(session) if rules is None else rules)
     elif existing is not None:
         if existing.confirmed or existing.category_source == "manual":
             raw.parse_error = (raw.parse_error or "") + " [kept: transaction was edited by hand]"

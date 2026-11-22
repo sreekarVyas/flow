@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import sync, transactions
+from app.api import categories, sync, transactions
 from app.config import settings
 from app.ingest.runner import poll_forever
 
@@ -28,3 +28,4 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Flow", lifespan=lifespan)
 app.include_router(transactions.router)
 app.include_router(sync.router)
+app.include_router(categories.router)

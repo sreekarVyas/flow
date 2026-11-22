@@ -44,6 +44,7 @@ uv run alembic upgrade head
 uv run python -m app.gmail.auth            # browser consent, once
 uv run python -m app.ingest.poller         # first poll: mail since 31 Oct
 uv run python -m app.ingest.survey         # see unparsed email formats
+uv run python -m app.categorize            # tag stored transactions with the category rules
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 cd ../frontend
@@ -63,6 +64,19 @@ The API polls Gmail every 10 min (`POLL_INTERVAL_SECONDS`). The UI has a **Sync 
 
 Transaction parsers always run before ignore rules. An ignore rule never matches an email that
 says "debited / credited / spent …" with an amount, so a transaction cannot be silently dropped.
+
+## Categories & rules
+
+- Migration `0002` seeds a two-level category list (19 parents) and built-in name rules.
+- New transactions get a category from the rules at ingest (`category_source = rule`, not confirmed).
+  Only `expense` and `refund` transactions carry a category.
+- Rule order: a learned **payee** rule (exact name), then the longest **name contains** / **UPI ID contains** match.
+  Name rules look at the payee name only, because the masked VPA carries PSP names such as `rxairtel`.
+- Tag by hand in the UI (tap a row). This confirms the transaction and saves a payee rule (debits only).
+  "Also tag N other payments" applies the same tag to unconfirmed payments to that payee.
+- Confirmed transactions keep their kind and category on reparse and on `app.categorize`.
+- `uv run python -m app.categorize --untagged` lists the payees no rule matches.
+- Edit categories and delete rules on the **Categories & rules** screen (link at the bottom of the list).
 
 ## Tests
 

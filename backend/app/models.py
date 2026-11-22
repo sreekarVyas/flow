@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -19,6 +20,8 @@ ACCOUNT_TYPES = ("bank", "credit_card")
 DIRECTIONS = ("debit", "credit")
 KINDS = ("expense", "transfer", "settlement", "income", "refund")
 PARSE_STATUSES = ("txn", "ignored", "unknown")
+MATCH_FIELDS = ("payee", "name_contains", "vpa_contains")
+RULE_SOURCES = ("seed", "learned")
 
 
 def _in(col: str, values: tuple[str, ...]) -> str:
@@ -41,6 +44,55 @@ class Account(Base):
     type: Mapped[str] = mapped_column(String(20))
     institution: Mapped[str] = mapped_column(String(50))
     last4: Mapped[str] = mapped_column(String(4))
+
+
+class Category(Base):
+    """Two levels: a parent (parent_id NULL) and its children."""
+
+    __tablename__ = "categories"
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_id", "name", name="uq_categories_parent_name", postgresql_nulls_not_distinct=True
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(60))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"), index=True)
+    icon: Mapped[str | None] = mapped_column(String(16))
+    sort_order: Mapped[int] = mapped_column(server_default="0", default=0)
+    archived: Mapped[bool] = mapped_column(server_default=false(), default=False)
+    is_seed: Mapped[bool] = mapped_column(server_default=false(), default=False)
+
+
+class Rule(Base):
+    """payee: exact normalized payee name (learned from manual tags).
+    name_contains / vpa_contains: substring of the payee name / VPA (seed rules). Longest match wins.
+    """
+
+    __tablename__ = "rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "match_field", "match_value", "direction", name="uq_rules_match", postgresql_nulls_not_distinct=True
+        ),
+        CheckConstraint(_in("match_field", MATCH_FIELDS), name="ck_rules_match_field"),
+        CheckConstraint(_in("source", RULE_SOURCES), name="ck_rules_source"),
+        CheckConstraint(f"direction IS NULL OR {_in('direction', DIRECTIONS)}", name="ck_rules_direction"),
+        CheckConstraint(f"kind IS NULL OR {_in('kind', KINDS)}", name="ck_rules_kind"),
+        CheckConstraint("category_id IS NOT NULL OR kind IS NOT NULL", name="ck_rules_has_action"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_field: Mapped[str] = mapped_column(String(16))
+    match_value: Mapped[str] = mapped_column(String(255))
+    direction: Mapped[str | None] = mapped_column(String(6))
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str | None] = mapped_column(String(16))
+    priority: Mapped[int] = mapped_column(server_default="0", default=0)
+    source: Mapped[str] = mapped_column(String(8))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    category: Mapped[Category | None] = relationship()
 
 
 class RawEmail(Base):
@@ -91,8 +143,9 @@ class Transaction(Base):
     vpa_or_merchant: Mapped[str | None] = mapped_column(String(255))
     ref_no: Mapped[str | None] = mapped_column(String(64))
     parse_confidence: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
-    # No FK yet: the categories table comes in Phase 2.
-    category_id: Mapped[int | None] = mapped_column()
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"), index=True
+    )
     category_source: Mapped[str | None] = mapped_column(String(8))
     confirmed: Mapped[bool] = mapped_column(default=False)
     notes: Mapped[str | None] = mapped_column(Text)
